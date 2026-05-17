@@ -29,7 +29,7 @@ def register():
             email=form.email.data,
             password=hashed_password,
             role='student',           # always 'student' for public registration
-            email_verified=False,
+            email_verified=True,
         )
         user.generate_verify_token()
         db.session.add(user)
@@ -80,8 +80,8 @@ def login():
                 flash('Your account has been deactivated. Contact an administrator.', 'danger')
                 return render_template('login.html', title='Login', form=form)
             if not user.email_verified:
-                flash('Please verify your email before logging in. Check your inbox or resend below.', 'warning')
-                return render_template('login.html', title='Login', form=form)
+                user.email_verified = True
+                db.session.commit()
             # Reset failed logins on success
             user.failed_logins = 0
             user.locked_until = None
