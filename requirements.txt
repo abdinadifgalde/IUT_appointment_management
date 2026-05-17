@@ -13,5 +13,5 @@ qrcode[pil]==7.4.2
 reportlab==4.2.0
 gunicorn==22.0.0
 python-socketio==5.11.2
-eventlet==0.35.2
+eventlet==0.33.3
 dnspython==2.6.1
