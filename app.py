@@ -1,6 +1,6 @@
 import os
-import eventlet
-eventlet.monkey_patch()
+from gevent import monkey
+monkey.patch_all()
 
 from flask import Flask, redirect, url_for, render_template, session, request as flask_request
 from flask_login import LoginManager, current_user, logout_user
@@ -37,7 +37,7 @@ db.init_app(app)
 migrate = Migrate(app, db)
 bcrypt = Bcrypt(app)
 mail = Mail(app)
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode='eventlet')
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='gevent')
 
 limiter = Limiter(
     get_remote_address,
