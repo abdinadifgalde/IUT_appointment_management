@@ -56,6 +56,11 @@ login_manager.login_message_category = 'info'
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    if exception:
+        db.session.rollback()
+    db.session.remove()
 
 # ── DB Init ───────────────────────────────────────────────────────────────────
 with app.app_context():
@@ -93,8 +98,11 @@ def check_session_timeout():
             return redirect(url_for('auth.login'))
         session['last_activity'] = now
         session.permanent = True
-        current_user.last_seen = datetime.now(timezone.utc)
-        db.session.commit()
+        try:
+            current_user.last_seen = datetime.now(timezone.utc)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
 
 # ── Time slot generator ───────────────────────────────────────────────────────
 def generate_time_slots(start_str="08:00", end_str="17:00"):
