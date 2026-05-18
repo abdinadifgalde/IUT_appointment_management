@@ -91,59 +91,125 @@ def book_appointment():
         return redirect(url_for('index'))
 
     form = AppointmentForm()
+
     officers = Officer.query.filter_by(is_active=True).all()
-    form.officer.choices = [(o.id, f"{o.name} ({o.designation})") for o in officers]
+    form.officer.choices = [
+        (o.id, f"{o.name} ({o.designation})")
+        for o in officers
+    ]
 
     from app import generate_time_slots
-    # Build choices covering all possible officer working hours (06:00-22:00)
-    # so WTForms never rejects a valid slot chosen via the calendar/slots API.
-    # Real slot validation (off-day, conflict, limit) is done below.
-    form.time.choices = [(s, s) for s in generate_time_slots('06:00', '22:00')]
 
-    # Auto-fill saved student info
+    # Allow all possible slot values
+    form.time.choices = [
+        (s, s)
+        for s in generate_time_slots('06:00', '22:00')
+    ]
+
+    # Auto-fill saved student data
     if request.method == 'GET':
         if current_user.student_id_num:
             form.student_id_num.data = current_user.student_id_num
+
         if current_user.department:
             form.department.data = current_user.department
 
     if form.validate_on_submit():
+
         booking_date = form.date.data
         day_name = booking_date.strftime('%A')
-        officer = db.session.get(Officer, form.officer.data)
 
+        officer = db.session.get(
+            Officer,
+            form.officer.data
+        )
+
+        # Check officer day off
         if is_day_off(officer, booking_date):
-            flash(f'{officer.name} does not take appointments on {day_name}s.', 'danger')
-            return render_template('student/book.html', form=form)
+            flash(
+                f'{officer.name} does not take appointments on {day_name}s.',
+                'danger'
+            )
+            return render_template(
+                'student/book.html',
+                form=form
+            )
 
-        unavail = get_unavailability(officer.id, booking_date)
+        # Check officer unavailability
+        unavail = get_unavailability(
+            officer.id,
+            booking_date
+        )
+
         if unavail:
-            flash(f'<i class="fas fa-ban me-1"></i> <strong>{officer.name}</strong> is unavailable '
-                  f'({unavail.start_date.strftime("%d %b")} – {unavail.end_date.strftime("%d %b %Y")}). '
-                  f'Reason: {unavail.reason}', 'danger')
-            return render_template('student/book.html', form=form)
+            flash(
+                f'<i class="fas fa-ban me-1"></i> '
+                f'<strong>{officer.name}</strong> is unavailable '
+                f'({unavail.start_date.strftime("%d %b")} – '
+                f'{unavail.end_date.strftime("%d %b %Y")}). '
+                f'Reason: {unavail.reason}',
+                'danger'
+            )
 
-        # Daily limit check
-        if officer.daily_limit > 0 and daily_count(officer.id, booking_date) >= officer.daily_limit:
-            flash(f'{officer.name} has reached the maximum appointments for that day.', 'danger')
-            return render_template('student/book.html', form=form)
+            return render_template(
+                'student/book.html',
+                form=form
+            )
 
-        # Slot collision
-        existing = Appointment.query.filter_by(officer_id=officer.id, date=booking_date, time=form.time.data).first()
+        # Check daily appointment limit
+        if (
+            officer.daily_limit > 0 and
+            daily_count(officer.id, booking_date) >= officer.daily_limit
+        ):
+            flash(
+                f'{officer.name} has reached the maximum appointments for that day.',
+                'danger'
+            )
+
+            return render_template(
+                'student/book.html',
+                form=form
+            )
+
+        # Check slot collision
+        existing = Appointment.query.filter_by(
+            officer_id=officer.id,
+            date=booking_date,
+            time=form.time.data
+        ).first()
+
         if existing:
-            flash('This time slot is already booked. You may join the waitlist.', 'warning')
-            return render_template('student/book.html', form=form, suggest_waitlist=True,
-                                   waitlist_apt_id=existing.id)
+            flash(
+                'This time slot is already booked. You may join the waitlist.',
+                'warning'
+            )
 
-        student_conflict = Appointment.query.filter_by(user_id=current_user.id,
-                                                       date=booking_date, time=form.time.data).first()
+            return render_template(
+                'student/book.html',
+                form=form,
+                suggest_waitlist=True,
+                waitlist_apt_id=existing.id
+            )
+
+        # Check student schedule conflict
+        student_conflict = Appointment.query.filter_by(
+            user_id=current_user.id,
+            date=booking_date,
+            time=form.time.data
+        ).first()
+
         if student_conflict:
-            flash('You already have an appointment at this time.', 'danger')
-            return render_template('student/book.html', form=form)
+            flash(
+                'You already have an appointment at this time.',
+                'danger'
+            )
 
-        import secrets as _sec
-        qr_token = _sec.token_urlsafe(16)
+            return render_template(
+                'student/book.html',
+                form=form
+            )
 
+        # Create appointment
         apt = Appointment(
             user_id=current_user.id,
             student_name=form.student_name.data,
@@ -156,31 +222,69 @@ def book_appointment():
             issue=form.issue.data,
             status='Pending',
         )
+
         db.session.add(apt)
+
+        # Save student info
         current_user.student_id_num = form.student_id_num.data
         current_user.department = form.department.data
-        db.session.flush()  # get apt.id before commit
 
-        # Generate QR code data (APT-{id}-{token})
-        from app import generate_qr_data
-        qr_data, _ = generate_qr_data(apt.id, qr_token)
-        apt.qr_code_data = qr_data
+        # Get appointment ID before commit
+        db.session.flush()
 
-        # Timeline entry
+        # Generate readable QR code data
+        apt.qr_code_data = f"""
+Appointment ID: {apt.id}
+Student Name: {form.student_name.data}
+Student ID: {form.student_id_num.data}
+Department: {form.department.data}
+Officer: {officer.name}
+Designation: {officer.designation}
+Date: {booking_date.strftime('%d %B %Y')}
+Time: {form.time.data}
+Issue: {form.issue.data}
+Status: Pending
+"""
+
+        # Add timeline entry
         from models import AppointmentTimeline
-        db.session.add(AppointmentTimeline(appointment_id=apt.id, status='Booked',
-                                           note='Appointment created, awaiting admin approval.'))
+
+        db.session.add(
+            AppointmentTimeline(
+                appointment_id=apt.id,
+                status='Booked',
+                note='Appointment created, awaiting admin approval.'
+            )
+        )
+
+        # Save to database
         db.session.commit()
 
         # Send confirmation email
-        from utils import send_email, booking_confirmation_email
-        send_email("Appointment Booked — IUT Appointments",
-                   [current_user.email], booking_confirmation_email(apt, current_user))
+        from utils import (
+            send_email,
+            booking_confirmation_email
+        )
 
-        flash('Appointment booked successfully! Waiting for approval.', 'success')
-        return redirect(url_for('student.dashboard'))
+        send_email(
+            "Appointment Booked — IUT Appointments",
+            [current_user.email],
+            booking_confirmation_email(apt, current_user)
+        )
 
-    return render_template('student/book.html', form=form)
+        flash(
+            'Appointment booked successfully! Waiting for approval.',
+            'success'
+        )
+
+        return redirect(
+            url_for('student.dashboard')
+        )
+
+    return render_template(
+        'student/book.html',
+        form=form
+    )
 
 # ── Cancel ────────────────────────────────────────────────────────────────────
 
