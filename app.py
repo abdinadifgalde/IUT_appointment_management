@@ -24,6 +24,10 @@ if database_url.startswith('postgresql://') and '+' not in database_url:
     database_url = database_url.replace('postgresql://', 'postgresql+psycopg://', 1)
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,
+    'pool_recycle': 300,
+}
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 
 # Flask-Mail
