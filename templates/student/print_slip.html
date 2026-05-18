@@ -29,7 +29,6 @@
   <h1><i>IUT</i> University Appointment System</h1>
   <p>Official Appointment Confirmation Slip</p>
 </div>
-
 <table>
   <tr><td>Appointment ID</td><td><strong>#{{ apt.id }}</strong></td></tr>
   <tr><td>Student Name</td><td>{{ apt.student_name }}</td></tr>
@@ -42,24 +41,19 @@
   <tr><td>Status</td><td><span class="badge badge-{{ apt.status.lower() }}">{{ apt.status }}</span></td></tr>
   <tr><td>Booked On</td><td>{{ apt.created_at.strftime('%d %b %Y %H:%M') }}</td></tr>
 </table>
-
-<!-- QR code: use stored token or fallback to external API -->
 <div class="qr">
   {% if apt.qr_code_data %}
   <img src="/student/qr/{{ apt.id }}.png" alt="QR Code" style="border:4px solid #eee; border-radius:8px; width:150px;height:150px;"
        onerror="this.src='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={{ apt.qr_code_data|urlencode }}'">
-  <p style="font-size:.75rem;color:#666;margin-top:6px;">{{ apt.qr_code_data }}</p>
   {% else %}
   <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=IUT-APT-{{ apt.id }}-{{ apt.student_id_num }}-{{ apt.date }}" alt="QR Code" style="border:4px solid #eee; border-radius:8px;">
   {% endif %}
   <p style="color:#888;font-size:.75rem;margin-top:6px;">Scan at the office for verification</p>
 </div>
-
 <div class="footer">
   Please arrive 5 minutes before your scheduled time. Bring this slip (printed or on phone) and your student ID.<br>
   Generated: {{ apt.created_at.strftime('%d %b %Y') }} — IUT Appointment Management System
 </div>
-
 <div class="no-print" style="text-align:center; margin-top:24px;">
   <button onclick="window.print()" style="padding:10px 28px; background:#4361ee; color:#fff; border:none; border-radius:8px; font-size:1rem; cursor:pointer;">
     🖨 Print Slip
