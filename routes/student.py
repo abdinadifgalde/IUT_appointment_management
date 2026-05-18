@@ -408,7 +408,7 @@ def calendar_data():
         if is_day_off(officer, d):
             result.append({'date': d.isoformat(), 'status': 'off'})
             continue
-        if get_unavailability(officer_id, d):
+        if get_unavailability(int(officer_id), d):
             result.append({'date': d.isoformat(), 'status': 'unavailable'})
             continue
         if officer.daily_limit > 0 and daily_count(officer.id, d) >= officer.daily_limit:
