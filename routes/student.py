@@ -692,18 +692,3 @@ def ai_suggest():
         'date':            str(preferred_date),
         'recommendations': result,
     })
-
-# ── One-time QR migration — DELETE this route after running it once ───────────
-
-@student_bp.route('/admin/fix-qr-codes')
-@login_required
-def fix_qr_codes():
-    """Rewrites all existing QR codes to human-readable format. Delete after use."""
-    if current_user.role != 'admin':
-        from flask import abort
-        abort(403)
-    appointments = Appointment.query.all()
-    for apt in appointments:
-        apt.qr_code_data = build_qr_data(apt)
-    db.session.commit()
-    return f"Done! Updated {len(appointments)} appointments."
