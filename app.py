@@ -98,12 +98,6 @@ def check_session_timeout():
             return redirect(url_for('auth.login'))
         session['last_activity'] = now
         session.permanent = True
-        try:
-            current_user.last_seen = datetime.now(timezone.utc)
-            db.session.commit()
-        except Exception:
-            db.session.rollback()
-
 # ── Time slot generator ───────────────────────────────────────────────────────
 def generate_time_slots(start_str="08:00", end_str="17:00"):
     slots, fmt = [], "%H:%M"
@@ -210,8 +204,12 @@ def unread_count():
     from models import Notification
     if not current_user.is_authenticated:
         return {'count': 0}
-    count = Notification.query.filter_by(user_id=current_user.id, is_read=False).count()
-    return {'count': count}
+    try:
+        count = Notification.query.filter_by(user_id=current_user.id, is_read=False).count()
+        return {'count': count}
+    except Exception:
+        db.session.rollback()
+        return {'count': 0}
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
