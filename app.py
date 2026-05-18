@@ -1,6 +1,4 @@
 import os
-async_mode='gevent'
-async_mode='threading'
 
 from flask import Flask, redirect, url_for, render_template, session, request as flask_request
 from flask_login import LoginManager, current_user, logout_user
