@@ -13,7 +13,7 @@ bcrypt = Bcrypt()
 
 def get_unavailability(officer_id, date):
     return OfficerUnavailability.query.filter(
-        OfficerUnavailability.officer_id == officer_id,
+        OfficerUnavailability.officer_id == int(officer_id),
         OfficerUnavailability.start_date <= date,
         OfficerUnavailability.end_date >= date
     ).first()
