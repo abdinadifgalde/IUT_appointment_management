@@ -155,23 +155,98 @@ def password_reset_email(user, reset_url):
     </div>"""
 
 def qr_appointment_email(appointment, user, qr_base64):
+
+    qr_info = f"""
+Appointment ID: {appointment.id}
+Student: {user.name}
+Officer: {appointment.officer.name}
+Date: {appointment.date.strftime('%d %B %Y')}
+Time: {appointment.time}
+Room: {appointment.officer.room or 'N/A'}
+Status: Approved
+"""
+
     return f"""
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #eee;border-radius:8px;overflow:hidden;">
+
       <div style="background:#0d4f3c;padding:24px;text-align:center;">
         <h2 style="color:white;margin:0;">Your Appointment QR Ticket</h2>
-        <p style="color:rgba(255,255,255,.8);margin:4px 0 0;">Appointment #{appointment.id} — Present this at check-in</p>
+
+        <p style="color:rgba(255,255,255,.8);margin:4px 0 0;">
+          Appointment #{appointment.id} — Present this at check-in
+        </p>
       </div>
+
       <div style="padding:30px;text-align:center;">
-        <p>Dear <strong>{user.name}</strong>, your appointment has been <strong>Approved</strong>.</p>
+
+        <p>
+          Dear <strong>{user.name}</strong>,
+          your appointment has been <strong>Approved</strong>.
+        </p>
+
         <table style="width:100%;border-collapse:collapse;margin:16px 0;text-align:left;">
-          <tr style="background:#f8f9fa;"><td style="padding:10px;font-weight:bold;">Officer</td><td style="padding:10px;">{appointment.officer.name}</td></tr>
-          <tr><td style="padding:10px;font-weight:bold;">Date</td><td style="padding:10px;">{appointment.date.strftime('%A, %d %B %Y')}</td></tr>
-          <tr style="background:#f8f9fa;"><td style="padding:10px;font-weight:bold;">Time</td><td style="padding:10px;">{appointment.time}</td></tr>
-          <tr><td style="padding:10px;font-weight:bold;">Location</td><td style="padding:10px;">{appointment.officer.room or 'Check with office'}</td></tr>
+
+          <tr style="background:#f8f9fa;">
+            <td style="padding:10px;font-weight:bold;">Officer</td>
+            <td style="padding:10px;">
+              {appointment.officer.name}
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:10px;font-weight:bold;">Date</td>
+            <td style="padding:10px;">
+              {appointment.date.strftime('%A, %d %B %Y')}
+            </td>
+          </tr>
+
+          <tr style="background:#f8f9fa;">
+            <td style="padding:10px;font-weight:bold;">Time</td>
+            <td style="padding:10px;">
+              {appointment.time}
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:10px;font-weight:bold;">Location</td>
+            <td style="padding:10px;">
+              {appointment.officer.room or 'Check with office'}
+            </td>
+          </tr>
+
         </table>
-        <p style="font-weight:bold;">Show this QR code to the officer for check-in:</p>
-        <img src="data:image/png;base64,{qr_base64}" alt="QR Code" style="width:180px;height:180px;border:4px solid #0d4f3c;border-radius:8px;margin:12px auto;display:block;">
-        <p style="color:#666;font-size:.85em;">Arrive 5 minutes early with your student ID.</p>
-        <p style="color:#666;font-size:.85em;">IUT Appointment Management System</p>
+
+        <p style="font-weight:bold;">
+          Show this QR code to the officer for check-in:
+        </p>
+
+        <img
+          src="data:image/png;base64,{qr_base64}"
+          alt="QR Code"
+          style="width:180px;height:180px;border:4px solid #0d4f3c;border-radius:8px;margin:12px auto;display:block;"
+        >
+
+        <div style="margin-top:20px;background:#f8f9fa;padding:15px;border-radius:8px;text-align:left;">
+
+          <h4 style="margin-top:0;color:#0d4f3c;">
+            QR Information
+          </h4>
+
+          <pre style="white-space:pre-wrap;font-size:14px;color:#333;margin:0;">
+{qr_info}
+          </pre>
+
+        </div>
+
+        <p style="color:#666;font-size:.85em;margin-top:20px;">
+          Arrive 5 minutes early with your student ID.
+        </p>
+
+        <p style="color:#666;font-size:.85em;">
+          IUT Appointment Management System
+        </p>
+
       </div>
-    </div>"""
+
+    </div>
+    """
