@@ -9,6 +9,12 @@ import io, csv
 student_bp = Blueprint('student', __name__)
 bcrypt = Bcrypt()
 
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+MAX_WAITLIST_PER_STUDENT = 3   # max simultaneous waitlist entries per student
+WAITLIST_CUTOFF_MINUTES  = 60  # skip promotion if appointment is within this many minutes
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def get_unavailability(officer_id, date):
@@ -18,18 +24,20 @@ def get_unavailability(officer_id, date):
         OfficerUnavailability.end_date >= date
     ).first()
 
+
 def officer_slots_for_date(officer, date):
     """Return list of time-slot strings for this officer on this date, respecting working hours."""
     from app import generate_time_slots
-    weekday = date.weekday()
+    weekday  = date.weekday()
     override = next((wh for wh in officer.working_hours if wh.weekday == weekday), None)
     if override:
         return generate_time_slots(override.start_time, override.end_time)
     return generate_time_slots(officer.work_start or "08:00", officer.work_end or "17:00")
 
+
 def is_day_off(officer, date):
-    off_days = officer.get_off_days()
-    return date.weekday() in off_days
+    return date.weekday() in officer.get_off_days()
+
 
 def daily_count(officer_id, date):
     return Appointment.query.filter(
@@ -37,6 +45,7 @@ def daily_count(officer_id, date):
         Appointment.date == date,
         Appointment.status.in_(['Pending', 'Approved'])
     ).count()
+
 
 def build_qr_data(apt):
     """Build human-readable QR code string for an appointment."""
@@ -53,6 +62,16 @@ def build_qr_data(apt):
         f"Status: {apt.status}\n"
     )
 
+
+def slot_appointment(officer_id, date, time):
+    """Return the active appointment occupying a specific slot, or None."""
+    return Appointment.query.filter_by(
+        officer_id=officer_id,
+        date=date,
+        time=time,
+    ).filter(Appointment.status.in_(['Pending', 'Approved'])).first()
+
+
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
 @student_bp.route('/student/dashboard')
@@ -62,8 +81,8 @@ def dashboard():
         return redirect(url_for('index'))
 
     search_officer = request.args.get('officer', '').strip()
-    search_status  = request.args.get('status', '').strip()
-    search_date    = request.args.get('date', '').strip()
+    search_status  = request.args.get('status',  '').strip()
+    search_date    = request.args.get('date',    '').strip()
 
     query = Appointment.query.filter_by(user_id=current_user.id)
     if search_officer:
@@ -72,21 +91,49 @@ def dashboard():
         query = query.filter(Appointment.status == search_status)
     if search_date:
         try:
-            d = datetime.strptime(search_date, '%Y-%m-%d').date()
+            d     = datetime.strptime(search_date, '%Y-%m-%d').date()
             query = query.filter(Appointment.date == d)
         except ValueError:
             pass
 
     appointments  = query.order_by(Appointment.date.desc(), Appointment.time.desc()).all()
-    notifications = Notification.query.filter_by(user_id=current_user.id, is_read=False)\
-        .order_by(Notification.created_at.desc()).all()
+    notifications = (
+        Notification.query
+        .filter_by(user_id=current_user.id, is_read=False)
+        .order_by(Notification.created_at.desc())
+        .all()
+    )
 
-    return render_template('student/dashboard.html',
-                           appointments=appointments,
-                           notifications=notifications,
-                           search_officer=search_officer,
-                           search_status=search_status,
-                           search_date=search_date)
+    # Waitlist entries for this student — keyed on slot, with position
+    waitlist_entries = (
+        WaitlistEntry.query
+        .filter_by(user_id=current_user.id)
+        .order_by(WaitlistEntry.joined_at)
+        .all()
+    )
+    # Annotate each entry with queue position and slot info
+    for entry in waitlist_entries:
+        position = (
+            WaitlistEntry.query
+            .filter_by(
+                officer_id=entry.officer_id,
+                slot_date=entry.slot_date,
+                slot_time=entry.slot_time,
+            )
+            .filter(WaitlistEntry.joined_at <= entry.joined_at)
+            .count()
+        )
+        entry.queue_position = position
+
+    return render_template(
+        'student/dashboard.html',
+        appointments=appointments,
+        notifications=notifications,
+        waitlist_entries=waitlist_entries,
+        search_officer=search_officer,
+        search_status=search_status,
+        search_date=search_date,
+    )
 
 
 @student_bp.route('/student/notifications/read-all')
@@ -96,6 +143,7 @@ def read_all_notifications():
     db.session.commit()
     return redirect(url_for('student.dashboard'))
 
+
 # ── Book appointment ──────────────────────────────────────────────────────────
 
 @student_bp.route('/student/book', methods=['GET', 'POST'])
@@ -104,7 +152,7 @@ def book_appointment():
     if current_user.role != 'student':
         return redirect(url_for('index'))
 
-    form    = AppointmentForm()
+    form     = AppointmentForm()
     officers = Officer.query.filter_by(is_active=True).all()
     form.officer.choices = [(o.id, f"{o.name} ({o.designation})") for o in officers]
 
@@ -122,12 +170,12 @@ def book_appointment():
         day_name     = booking_date.strftime('%A')
         officer      = db.session.get(Officer, form.officer.data)
 
-        # Day-off check
+        # ── Day-off check ─────────────────────────────────────────────────────
         if is_day_off(officer, booking_date):
             flash(f'{officer.name} does not take appointments on {day_name}s.', 'danger')
             return render_template('student/book.html', form=form)
 
-        # Unavailability check
+        # ── Unavailability check ──────────────────────────────────────────────
         unavail = get_unavailability(officer.id, booking_date)
         if unavail:
             flash(
@@ -138,33 +186,49 @@ def book_appointment():
             )
             return render_template('student/book.html', form=form)
 
-        # Daily limit check
+        # ── Daily limit check ─────────────────────────────────────────────────
         if officer.daily_limit > 0 and daily_count(officer.id, booking_date) >= officer.daily_limit:
             flash(f'{officer.name} has reached the maximum appointments for that day.', 'danger')
             return render_template('student/book.html', form=form)
 
-        # Slot collision check
-        existing = Appointment.query.filter_by(
-            officer_id=officer.id,
-            date=booking_date,
-            time=form.time.data
-        ).first()
-        if existing:
-            flash('This time slot is already booked. You may join the waitlist.', 'warning')
-            return render_template('student/book.html', form=form,
-                                   suggest_waitlist=True, waitlist_apt_id=existing.id)
-
-        # Student schedule conflict check
+        # ── Student schedule conflict check ───────────────────────────────────
         student_conflict = Appointment.query.filter_by(
             user_id=current_user.id,
             date=booking_date,
-            time=form.time.data
-        ).first()
+            time=form.time.data,
+        ).filter(Appointment.status.in_(['Pending', 'Approved'])).first()
         if student_conflict:
             flash('You already have an appointment at this time.', 'danger')
             return render_template('student/book.html', form=form)
 
-        # Create appointment
+        # ── Slot collision check → offer waitlist ─────────────────────────────
+        taken = slot_appointment(officer.id, booking_date, form.time.data)
+        if taken:
+            # Count how many are already waiting for this slot
+            waiters = WaitlistEntry.query.filter_by(
+                officer_id=officer.id,
+                slot_date=booking_date,
+                slot_time=form.time.data,
+            ).count()
+            flash(
+                f'This time slot is already booked ({waiters} person(s) waiting). '
+                f'You may join the waitlist.',
+                'warning'
+            )
+            return render_template(
+                'student/book.html',
+                form=form,
+                suggest_waitlist=True,
+                waitlist_officer_id=officer.id,
+                waitlist_date=booking_date.isoformat(),
+                waitlist_time=form.time.data,
+                waitlist_student_id_num=form.student_id_num.data,
+                waitlist_department=form.department.data,
+                waitlist_issue=form.issue.data,
+                waitlist_student_name=form.student_name.data,
+            )
+
+        # ── Create appointment ────────────────────────────────────────────────
         apt = Appointment(
             user_id=current_user.id,
             student_name=form.student_name.data,
@@ -182,12 +246,9 @@ def book_appointment():
         current_user.student_id_num = form.student_id_num.data
         current_user.department     = form.department.data
 
-        db.session.flush()  # get apt.id before commit
-
-        # Generate readable QR code data
+        db.session.flush()          # get apt.id before commit
         apt.qr_code_data = build_qr_data(apt)
 
-        # Timeline entry
         from models import AppointmentTimeline
         db.session.add(AppointmentTimeline(
             appointment_id=apt.id,
@@ -197,7 +258,6 @@ def book_appointment():
 
         db.session.commit()
 
-        # Confirmation email
         from utils import send_email, booking_confirmation_email
         send_email(
             "Appointment Booked — IUT Appointments",
@@ -209,6 +269,7 @@ def book_appointment():
         return redirect(url_for('student.dashboard'))
 
     return render_template('student/book.html', form=form)
+
 
 # ── Cancel ────────────────────────────────────────────────────────────────────
 
@@ -223,11 +284,13 @@ def cancel_appointment(appointment_id):
         flash('Cannot cancel a completed appointment.', 'danger')
         return redirect(url_for('student.dashboard'))
 
-    _promote_waitlist(apt)
     apt.status = 'Cancelled'
+    db.session.flush()
+    _promote_waitlist(apt.officer_id, apt.date, apt.time)
     db.session.commit()
     flash('Appointment cancelled.', 'success')
     return redirect(url_for('student.dashboard'))
+
 
 # ── Reschedule ────────────────────────────────────────────────────────────────
 
@@ -264,26 +327,39 @@ def reschedule_appointment(appointment_id):
 
         conflict = Appointment.query.filter_by(
             officer_id=officer.id, date=new_date, time=new_time
-        ).filter(Appointment.id != apt.id).first()
+        ).filter(
+            Appointment.id != apt.id,
+            Appointment.status.in_(['Pending', 'Approved'])
+        ).first()
         if conflict:
             flash('That slot is already taken. Please pick another.', 'danger')
             return render_template('student/reschedule.html', form=form, apt=apt)
 
-        old_date = apt.date
-        old_time = apt.time
-        old_day  = apt.day
+        # Student self-conflict at new slot
+        self_conflict = Appointment.query.filter_by(
+            user_id=current_user.id, date=new_date, time=new_time
+        ).filter(
+            Appointment.id != apt.id,
+            Appointment.status.in_(['Pending', 'Approved'])
+        ).first()
+        if self_conflict:
+            flash('You already have another appointment at that time.', 'danger')
+            return render_template('student/reschedule.html', form=form, apt=apt)
 
-        from collections import namedtuple
-        OldSlot      = namedtuple('OldSlot', ['id', 'officer_id', 'date', 'time', 'day', 'officer'])
-        old_slot_info = OldSlot(apt.id, apt.officer_id, old_date, old_time, old_day, apt.officer)
-        _promote_waitlist(old_slot_info)
+        old_officer_id = apt.officer_id
+        old_date       = apt.date
+        old_time       = apt.time
 
         apt.date   = new_date
         apt.time   = new_time
         apt.day    = day_name
         apt.status = 'Pending'
-        db.session.commit()
+        db.session.flush()
 
+        # Promote someone from the old slot's waitlist
+        _promote_waitlist(old_officer_id, old_date, old_time)
+
+        db.session.commit()
         flash('Appointment rescheduled successfully!', 'success')
         return redirect(url_for('student.dashboard'))
 
@@ -293,34 +369,94 @@ def reschedule_appointment(appointment_id):
 
     return render_template('student/reschedule.html', form=form, apt=apt)
 
+
 # ── Waitlist ──────────────────────────────────────────────────────────────────
 
-@student_bp.route('/student/waitlist/<int:appointment_id>', methods=['POST'])
+@student_bp.route('/student/waitlist/join', methods=['POST'])
 @login_required
-def join_waitlist(appointment_id):
-    apt = db.session.get(Appointment, appointment_id)
-    if not apt:
-        flash('Appointment not found.', 'danger')
+def join_waitlist():
+    """
+    Join the waitlist for a specific (officer, date, time) slot.
+    All three identifiers come from the form, NOT from an appointment_id,
+    so the waitlist survives appointment cancellations and reschedules.
+    """
+    officer_id     = request.form.get('officer_id', type=int)
+    slot_date_str  = request.form.get('slot_date', '')
+    slot_time      = request.form.get('slot_time', '').strip()
+    student_name   = request.form.get('student_name',   current_user.name).strip()
+    student_id_num = request.form.get('student_id_num', current_user.student_id_num or '').strip()
+    department     = request.form.get('department',     current_user.department or '').strip()
+    issue          = request.form.get('issue', '').strip()
+
+    # Validate inputs
+    if not officer_id or not slot_date_str or not slot_time:
+        flash('Missing slot information. Please try booking again.', 'danger')
         return redirect(url_for('student.book_appointment'))
 
+    try:
+        slot_date = datetime.strptime(slot_date_str, '%Y-%m-%d').date()
+    except ValueError:
+        flash('Invalid date format.', 'danger')
+        return redirect(url_for('student.book_appointment'))
+
+    officer = db.session.get(Officer, officer_id)
+    if not officer:
+        flash('Officer not found.', 'danger')
+        return redirect(url_for('student.book_appointment'))
+
+    # Slot must still be taken (no point joining if it's now open)
+    taken = slot_appointment(officer_id, slot_date, slot_time)
+    if not taken:
+        flash('That slot is now available — go ahead and book it directly!', 'info')
+        return redirect(url_for('student.book_appointment'))
+
+    # Enforce per-student waitlist cap
+    active_count = WaitlistEntry.query.filter_by(user_id=current_user.id).count()
+    if active_count >= MAX_WAITLIST_PER_STUDENT:
+        flash(
+            f'You can only be on {MAX_WAITLIST_PER_STUDENT} waitlists at a time. '
+            f'Please leave one before joining another.',
+            'warning'
+        )
+        return redirect(url_for('student.dashboard'))
+
+    # Duplicate check for this exact slot
     already = WaitlistEntry.query.filter_by(
-        appointment_id=appointment_id, user_id=current_user.id
+        officer_id=officer_id,
+        slot_date=slot_date,
+        slot_time=slot_time,
+        user_id=current_user.id,
     ).first()
     if already:
         flash('You are already on the waitlist for this slot.', 'info')
         return redirect(url_for('student.dashboard'))
 
+    # Calculate queue position before inserting
+    current_waiters = WaitlistEntry.query.filter_by(
+        officer_id=officer_id,
+        slot_date=slot_date,
+        slot_time=slot_time,
+    ).count()
+
     entry = WaitlistEntry(
-        appointment_id=appointment_id,
+        officer_id=officer_id,
+        slot_date=slot_date,
+        slot_time=slot_time,
         user_id=current_user.id,
-        student_name=current_user.name,
-        student_id_num=request.form.get('student_id_num', current_user.student_id_num or ''),
-        department=request.form.get('department', current_user.department or ''),
-        issue=request.form.get('issue', '')
+        student_name=student_name,
+        student_id_num=student_id_num,
+        department=department,
+        issue=issue,
     )
     db.session.add(entry)
     db.session.commit()
-    flash('You have joined the waitlist. We will notify you if the slot opens.', 'info')
+
+    flash(
+        f'You are #{current_waiters + 1} on the waitlist for '
+        f'{officer.name} on {slot_date.strftime("%d %b %Y")} at {slot_time}. '
+        f'We will notify you if the slot opens.',
+        'info'
+    )
     return redirect(url_for('student.dashboard'))
 
 
@@ -337,45 +473,142 @@ def leave_waitlist(entry_id):
     return redirect(url_for('student.dashboard'))
 
 
-def _promote_waitlist(apt):
-    """When a slot opens, promote the first waitlist entry to a new Appointment."""
-    first = WaitlistEntry.query.filter_by(
-        appointment_id=apt.id
-    ).order_by(WaitlistEntry.joined_at).first()
-    if not first:
+@student_bp.route('/student/waitlist')
+@login_required
+def my_waitlist():
+    """Dedicated page showing the student's waitlist entries with positions."""
+    entries = (
+        WaitlistEntry.query
+        .filter_by(user_id=current_user.id)
+        .order_by(WaitlistEntry.joined_at)
+        .all()
+    )
+    now = datetime.now(timezone.utc)
+    for entry in entries:
+        # Queue position
+        entry.queue_position = (
+            WaitlistEntry.query
+            .filter_by(
+                officer_id=entry.officer_id,
+                slot_date=entry.slot_date,
+                slot_time=entry.slot_time,
+            )
+            .filter(WaitlistEntry.joined_at <= entry.joined_at)
+            .count()
+        )
+        # Total waiters for this slot
+        entry.total_waiters = WaitlistEntry.query.filter_by(
+            officer_id=entry.officer_id,
+            slot_date=entry.slot_date,
+            slot_time=entry.slot_time,
+        ).count()
+        # Warn if the appointment is very soon
+        slot_dt = datetime.combine(entry.slot_date, datetime.strptime(
+            entry.slot_time.split(' - ')[0].strip(), '%I:%M %p'
+        ).time()).replace(tzinfo=timezone.utc)
+        entry.is_imminent = (slot_dt - now) < timedelta(hours=2)
+
+    return render_template('student/waitlist.html', entries=entries)
+
+
+def _promote_waitlist(officer_id, slot_date, slot_time):
+    """
+    When a slot (officer_id, slot_date, slot_time) opens up, promote the
+    first eligible waitlist entry to a new Appointment.
+
+    Key fixes vs original:
+      - Keyed on (officer_id, slot_date, slot_time), NOT appointment_id
+      - Skips promotion if appointment is within WAITLIST_CUTOFF_MINUTES
+      - Checks promoted student has no schedule conflict at that slot
+      - Commits only after all DB objects are ready; email sent after commit
+    """
+    now = datetime.now(timezone.utc)
+
+    # Skip if the slot is too soon to be useful
+    try:
+        slot_dt = datetime.combine(
+            slot_date,
+            datetime.strptime(slot_time.split(' - ')[0].strip(), '%I:%M %p').time()
+        ).replace(tzinfo=timezone.utc)
+        if (slot_dt - now).total_seconds() < WAITLIST_CUTOFF_MINUTES * 60:
+            return
+    except ValueError:
+        pass  # Can't parse time — proceed anyway
+
+    officer = db.session.get(Officer, officer_id)
+    if not officer:
         return
 
-    user    = db.session.get(User, first.user_id)
-    new_apt = Appointment(
-        user_id=first.user_id,
-        student_name=first.student_name,
-        student_id_num=first.student_id_num,
-        department=first.department,
-        officer_id=apt.officer_id,
-        day=apt.day,
-        date=apt.date,
-        time=apt.time,
-        issue=first.issue,
-        status='Pending'
+    candidates = (
+        WaitlistEntry.query
+        .filter_by(officer_id=officer_id, slot_date=slot_date, slot_time=slot_time)
+        .order_by(WaitlistEntry.joined_at)
+        .all()
     )
-    db.session.add(new_apt)
-    db.session.delete(first)
 
-    notif = Notification(
-        user_id=first.user_id,
-        message=(
-            f"Great news! A slot opened up with {apt.officer.name} "
-            f"on {apt.date} at {apt.time}. You have been booked!"
+    for first in candidates:
+        user = db.session.get(User, first.user_id)
+        if not user:
+            db.session.delete(first)
+            continue
+
+        # Check promoted student has no conflict at this slot
+        conflict = Appointment.query.filter_by(
+            user_id=first.user_id,
+            date=slot_date,
+            time=slot_time,
+        ).filter(Appointment.status.in_(['Pending', 'Approved'])).first()
+        if conflict:
+            # Skip this person — they already have something at this time
+            db.session.delete(first)
+            continue
+
+        day_name = slot_date.strftime('%A')
+        new_apt  = Appointment(
+            user_id=first.user_id,
+            student_name=first.student_name,
+            student_id_num=first.student_id_num,
+            department=first.department,
+            officer_id=officer_id,
+            day=day_name,
+            date=slot_date,
+            time=slot_time,
+            issue=first.issue,
+            status='Pending',
         )
-    )
-    db.session.add(notif)
+        db.session.add(new_apt)
+        db.session.delete(first)
+        db.session.flush()          # get new_apt.id
 
-    from utils import send_email, waitlist_promoted_email
-    send_email(
-        "Waitlist Slot Available — IUT Appointments",
-        [user.email],
-        waitlist_promoted_email(new_apt, user)
-    )
+        new_apt.qr_code_data = build_qr_data(new_apt)
+
+        notif = Notification(
+            user_id=first.user_id,
+            message=(
+                f"Great news! A slot opened up with {officer.name} "
+                f"on {slot_date.strftime('%d %b %Y')} at {slot_time}. "
+                f"You have been automatically booked!"
+            )
+        )
+        db.session.add(notif)
+
+        # Commit everything BEFORE sending email so a mail failure
+        # doesn't roll back the appointment.
+        db.session.commit()
+
+        try:
+            from utils import send_email, waitlist_promoted_email
+            send_email(
+                "Waitlist Slot Available — IUT Appointments",
+                [user.email],
+                waitlist_promoted_email(new_apt, user)
+            )
+        except Exception as mail_err:
+            # Log but don't crash — appointment is already saved
+            print(f'[IUT] Waitlist promotion email failed for user {user.id}: {mail_err}')
+
+        return  # Only promote one person per slot opening
+
 
 # ── Slots API ─────────────────────────────────────────────────────────────────
 
@@ -397,16 +630,25 @@ def get_slots():
         return jsonify({'unavailable': False, 'slots': []})
 
     if is_day_off(officer, date_obj):
-        return jsonify({'unavailable': True, 'reason': 'Recurring day off',
-                        'officer_name': officer.name,
-                        'start_date': date_str, 'end_date': date_str, 'slots': []})
+        return jsonify({
+            'unavailable': True,
+            'reason': 'Recurring day off',
+            'officer_name': officer.name,
+            'start_date': date_str,
+            'end_date': date_str,
+            'slots': []
+        })
 
     unavail = get_unavailability(officer_id, date_obj)
     if unavail:
-        return jsonify({'unavailable': True, 'reason': unavail.reason,
-                        'officer_name': officer.name,
-                        'start_date': unavail.start_date.strftime('%d %b %Y'),
-                        'end_date': unavail.end_date.strftime('%d %b %Y'), 'slots': []})
+        return jsonify({
+            'unavailable': True,
+            'reason': unavail.reason,
+            'officer_name': officer.name,
+            'start_date': unavail.start_date.strftime('%d %b %Y'),
+            'end_date':   unavail.end_date.strftime('%d %b %Y'),
+            'slots': []
+        })
 
     import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services'))
@@ -416,11 +658,25 @@ def get_slots():
     all_slots       = officer_slots_for_date(officer, date_obj)
     limit_reached   = officer.daily_limit > 0 and daily_count(officer.id, date_obj) >= officer.daily_limit
 
+    slot_data = []
+    for s in all_slots:
+        waiters = WaitlistEntry.query.filter_by(
+            officer_id=officer.id,
+            slot_date=date_obj,
+            slot_time=s,
+        ).count()
+        slot_data.append({
+            'time':      s,
+            'available': s in available_slots,
+            'waiters':   waiters,
+        })
+
     return jsonify({
         'unavailable':   False,
         'limit_reached': limit_reached,
-        'slots': [{'time': s, 'available': s in available_slots} for s in all_slots]
+        'slots':         slot_data,
     })
+
 
 # ── Calendar API ──────────────────────────────────────────────────────────────
 
@@ -465,6 +721,7 @@ def calendar_data():
 
     return jsonify(result)
 
+
 # ── Export PDF ────────────────────────────────────────────────────────────────
 
 @student_bp.route('/student/export/pdf')
@@ -476,8 +733,12 @@ def export_pdf():
     from reportlab.lib.styles import getSampleStyleSheet
     import io as _io
 
-    appointments = Appointment.query.filter_by(user_id=current_user.id)\
-        .order_by(Appointment.date.desc()).all()
+    appointments = (
+        Appointment.query
+        .filter_by(user_id=current_user.id)
+        .order_by(Appointment.date.desc())
+        .all()
+    )
 
     buf = _io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4,
@@ -502,24 +763,25 @@ def export_pdf():
             apt.date.strftime('%d %b %Y'),
             apt.time,
             apt.issue[:40] + ('…' if len(apt.issue) > 40 else ''),
-            apt.status
+            apt.status,
         ])
 
     t = Table(data, colWidths=[25, 100, 85, 130, 130, 70])
     t.setStyle(TableStyle([
-        ('BACKGROUND',   (0, 0), (-1, 0),  colors.HexColor('#4361ee')),
-        ('TEXTCOLOR',    (0, 0), (-1, 0),  colors.white),
-        ('FONTNAME',     (0, 0), (-1, 0),  'Helvetica-Bold'),
-        ('FONTSIZE',     (0, 0), (-1, -1), 8),
+        ('BACKGROUND',     (0, 0), (-1, 0),  colors.HexColor('#4361ee')),
+        ('TEXTCOLOR',      (0, 0), (-1, 0),  colors.white),
+        ('FONTNAME',       (0, 0), (-1, 0),  'Helvetica-Bold'),
+        ('FONTSIZE',       (0, 0), (-1, -1), 8),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')]),
-        ('GRID',         (0, 0), (-1, -1), 0.5, colors.HexColor('#dee2e6')),
-        ('PADDING',      (0, 0), (-1, -1), 6),
+        ('GRID',           (0, 0), (-1, -1), 0.5, colors.HexColor('#dee2e6')),
+        ('PADDING',        (0, 0), (-1, -1), 6),
     ]))
     elements.append(t)
     doc.build(elements)
     buf.seek(0)
     return Response(buf, mimetype='application/pdf',
                     headers={'Content-Disposition': 'attachment; filename=my_appointments.pdf'})
+
 
 # ── Print slip ────────────────────────────────────────────────────────────────
 
@@ -531,6 +793,7 @@ def print_slip(appointment_id):
         flash('Not authorized.', 'danger')
         return redirect(url_for('student.dashboard'))
     return render_template('student/print_slip.html', apt=apt)
+
 
 # ── Profile ───────────────────────────────────────────────────────────────────
 
@@ -565,6 +828,7 @@ def profile():
         form.department.data     = current_user.department
     return render_template('profile.html', form=form)
 
+
 # ── Dark mode toggle ──────────────────────────────────────────────────────────
 
 @student_bp.route('/toggle-darkmode', methods=['POST'])
@@ -573,6 +837,7 @@ def toggle_darkmode():
     current_user.dark_mode = not current_user.dark_mode
     db.session.commit()
     return jsonify({'dark_mode': current_user.dark_mode})
+
 
 # ── Officer list & profile ────────────────────────────────────────────────────
 
@@ -596,6 +861,7 @@ def officer_profile(officer_id):
     total_apts = Appointment.query.filter_by(officer_id=officer_id).count()
     return render_template('student/officer_profile.html', officer=officer,
                            today=today, unavail=unavail, total_apts=total_apts)
+
 
 # ── QR Code PNG endpoint ──────────────────────────────────────────────────────
 
@@ -627,13 +893,18 @@ def qr_image(appointment_id):
     return Response(buf, mimetype='image/png',
                     headers={'Cache-Control': 'max-age=3600'})
 
+
 # ── Live appointment status API ───────────────────────────────────────────────
 
 @student_bp.route('/api/my-appointments/status')
 @login_required
 def my_appointments_status():
-    apts = Appointment.query.filter_by(user_id=current_user.id)\
-        .order_by(Appointment.date.desc()).all()
+    apts = (
+        Appointment.query
+        .filter_by(user_id=current_user.id)
+        .order_by(Appointment.date.desc())
+        .all()
+    )
     return jsonify([{
         'id':      a.id,
         'status':  a.status,
@@ -642,6 +913,7 @@ def my_appointments_status():
         'time':    a.time,
         'qr_data': a.qr_code_data or '',
     } for a in apts])
+
 
 # ── AI Suggestions API ────────────────────────────────────────────────────────
 
