@@ -60,7 +60,7 @@ class Officer(db.Model):
     name            = db.Column(db.String(100), nullable=False)
     designation     = db.Column(db.String(100), nullable=False)
     bio             = db.Column(db.Text, nullable=True)
-    handles         = db.Column(db.Text, nullable=True)   # comma-separated issues handled
+    handles         = db.Column(db.Text, nullable=True)
     email           = db.Column(db.String(120), nullable=True)
     room            = db.Column(db.String(50), nullable=True)
     photo_url       = db.Column(db.String(255), nullable=True)
@@ -134,31 +134,34 @@ class Appointment(db.Model):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc)
     )
-    # NOTE: waitlist relationship removed — WaitlistEntry is now slot-based,
-    # not appointment-based. Use WaitlistEntry.query.filter_by(officer_id=...,
-    # slot_date=..., slot_time=...) directly.
+    # ── Cal.com upgrade fields ────────────────────────────────────────────────
+    duration             = db.Column(db.Integer,      default=15)
+    meeting_type         = db.Column(db.String(20),   default='in-person')
+    location             = db.Column(db.String(255),  nullable=True)
+    recording_link       = db.Column(db.String(255),  nullable=True)
+    session_notes        = db.Column(db.Text,         nullable=True)
+    no_show              = db.Column(db.Boolean,      default=False)
+    previous_schedule    = db.Column(db.Text,         nullable=True)
+    reschedule_requested = db.Column(db.Boolean,      default=False)
+    reschedule_message   = db.Column(db.Text,         nullable=True)
+    reschedule_proposed_date = db.Column(db.Date,     nullable=True)
+    reschedule_proposed_time = db.Column(db.String(20), nullable=True)
+    completed_at         = db.Column(db.DateTime,     nullable=True)
+    end_time             = db.Column(db.String(20),   nullable=True)
+    # NOTE: waitlist relationship removed — WaitlistEntry is now slot-based
 
 
 class WaitlistEntry(db.Model):
     """
     Slot-based waitlist entry.
-
-    Keyed on (officer_id, slot_date, slot_time) — NOT on appointment_id —
-    so entries survive appointment cancellations and reschedules.
-
-    Migration note: the old `appointment_id` foreign key column has been
-    removed. Run the migration script below before deploying.
+    Keyed on (officer_id, slot_date, slot_time) — NOT on appointment_id.
     """
     __tablename__ = 'waitlist_entry'
 
     id              = db.Column(db.Integer, primary_key=True)
-
-    # ── Slot identity (replaces appointment_id) ───────────────────────────────
     officer_id      = db.Column(db.Integer, db.ForeignKey('officer.id'), nullable=False, index=True)
     slot_date       = db.Column(db.Date,    nullable=False, index=True)
     slot_time       = db.Column(db.String(30), nullable=False)
-
-    # ── Student info ──────────────────────────────────────────────────────────
     user_id         = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
     student_name    = db.Column(db.String(100), nullable=False)
     student_id_num  = db.Column(db.String(50),  nullable=False)
@@ -166,11 +169,9 @@ class WaitlistEntry(db.Model):
     issue           = db.Column(db.Text,         nullable=False)
     joined_at       = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
-    # ── Relationships ─────────────────────────────────────────────────────────
     user    = db.relationship('User',    backref='waitlist_entries')
     officer = db.relationship('Officer', backref='waitlist_entries')
 
-    # ── Unique constraint: one entry per student per slot ─────────────────────
     __table_args__ = (
         db.UniqueConstraint('officer_id', 'slot_date', 'slot_time', 'user_id',
                             name='uq_waitlist_student_slot'),
@@ -188,10 +189,10 @@ class Notification(db.Model):
 class NotificationLog(db.Model):
     id          = db.Column(db.Integer, primary_key=True)
     user_id     = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    type        = db.Column(db.String(50),  nullable=False)   # email, sms, whatsapp
+    type        = db.Column(db.String(50),  nullable=False)
     subject     = db.Column(db.String(255), nullable=True)
     message     = db.Column(db.Text,        nullable=False)
-    status      = db.Column(db.String(20),  default='pending')  # pending, sent, failed
+    status      = db.Column(db.String(20),  default='pending')
     created_at  = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     sent_at     = db.Column(db.DateTime, nullable=True)
     user        = db.relationship('User', backref='notification_logs')
@@ -226,3 +227,36 @@ class AuditLog(db.Model):
     detail      = db.Column(db.String(500), nullable=False)
     created_at  = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     admin       = db.relationship('User', backref='audit_logs')
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# NEW MODELS — Cal.com-inspired upgrade
+# ═════════════════════════════════════════════════════════════════════════════
+
+class AppointmentHistory(db.Model):
+    """Tracks every status change, reschedule, and officer action."""
+    __tablename__ = 'appointment_history'
+
+    id              = db.Column(db.Integer, primary_key=True)
+    appointment_id  = db.Column(db.Integer, db.ForeignKey('appointment.id'), nullable=False, index=True)
+    action          = db.Column(db.String(80),  nullable=False)
+    old_value       = db.Column(db.Text,        nullable=True)
+    new_value       = db.Column(db.Text,        nullable=True)
+    changed_by      = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    note            = db.Column(db.Text,        nullable=True)
+    timestamp       = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    appointment     = db.relationship('Appointment', backref='history_events')
+    actor           = db.relationship('User', backref='history_actions')
+
+
+class AppointmentGuest(db.Model):
+    """Additional attendees added by the officer."""
+    __tablename__ = 'appointment_guest'
+
+    id              = db.Column(db.Integer, primary_key=True)
+    appointment_id  = db.Column(db.Integer, db.ForeignKey('appointment.id'), nullable=False, index=True)
+    guest_email     = db.Column(db.String(120), nullable=False)
+    added_at        = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    appointment     = db.relationship('Appointment', backref='guests')
