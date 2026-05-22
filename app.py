@@ -1,7 +1,7 @@
-import os
-import json as _json
+# Full Advanced `app.py` Code
 
-from datetime import datetime, timedelta, timezone
+```python
+import os
 
 from flask import (
     Flask,
@@ -9,7 +9,7 @@ from flask import (
     url_for,
     render_template,
     session,
-    jsonify
+    request as flask_request
 )
 
 from flask_login import (
@@ -19,11 +19,15 @@ from flask_login import (
 )
 
 from flask_wtf.csrf import CSRFProtect
+
 from flask_bcrypt import Bcrypt
+
 from flask_mail import Mail
+
 from flask_migrate import Migrate
 
 from flask_limiter import Limiter
+
 from flask_limiter.util import get_remote_address
 
 from flask_socketio import (
@@ -32,23 +36,30 @@ from flask_socketio import (
     join_room
 )
 
-from models import db, User
+from models import (
+    db,
+    User,
+    Appointment,
+    Notification,
+    AppointmentHistory,
+    AppointmentGuest
+)
 
-
-# ════════════════════════════════════════════════════════════════
-# Flask App
-# ════════════════════════════════════════════════════════════════
+from datetime import (
+    datetime,
+    timedelta,
+    timezone
+)
 
 app = Flask(__name__)
 
+# ──────────────────────────────────────────────────────────────────────
+# CONFIGURATION
+# ──────────────────────────────────────────────────────────────────────
 
-# ════════════════════════════════════════════════════════════════
-# Basic Config
-# ════════════════════════════════════════════════════════════════
-
-app.config['SECRET_KEY'] = os.environ.get(
-    'SECRET_KEY',
-    'change_this_secret_key'
+app.config['SECRET_KEY'] = (
+    os.environ.get('SECRET_KEY')
+    or 'iut_secret_key_change_in_prod_2026!'
 )
 
 basedir = os.path.abspath(os.path.dirname(__file__))
@@ -77,43 +88,56 @@ if database_url.startswith('postgresql://') and '+' not in database_url:
     )
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
     'pool_pre_ping': True,
-    'pool_recycle': 300
+    'pool_recycle': 300,
 }
 
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 
+# ──────────────────────────────────────────────────────────────────────
+# ADVANCED BOOKING SETTINGS
+# ──────────────────────────────────────────────────────────────────────
 
-# ════════════════════════════════════════════════════════════════
-# Mail Config
-# ════════════════════════════════════════════════════════════════
+app.config['DEFAULT_TIMEZONE'] = 'Asia/Dhaka'
+
+app.config['DEFAULT_SLOT_DURATION'] = 15
+
+app.config['MIN_BOOKING_DURATION'] = 5
+
+app.config['MAX_BOOKING_DURATION'] = 120
+
+app.config['BOOKING_START_HOUR'] = 8
+
+app.config['BOOKING_END_HOUR'] = 17
+
+app.config['ENABLE_OVERLAY_CALENDAR'] = True
+
+# ──────────────────────────────────────────────────────────────────────
+# MAIL CONFIGURATION
+# ──────────────────────────────────────────────────────────────────────
 
 app.config['MAIL_SERVER'] = 'smtp.gmail.com'
+
 app.config['MAIL_PORT'] = 587
+
 app.config['MAIL_USE_TLS'] = True
 
-app.config['MAIL_USERNAME'] = os.environ.get(
-    'MAIL_USERNAME',
-    ''
-)
+app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME', '')
 
-app.config['MAIL_PASSWORD'] = os.environ.get(
-    'MAIL_PASSWORD',
-    ''
-)
+app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD', '')
 
 app.config['MAIL_DEFAULT_SENDER'] = os.environ.get(
     'MAIL_USERNAME',
     'noreply@iut-dhaka.edu'
 )
 
-
-# ════════════════════════════════════════════════════════════════
-# Extensions
-# ════════════════════════════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────────────
+# EXTENSIONS
+# ──────────────────────────────────────────────────────────────────────
 
 csrf = CSRFProtect(app)
 
@@ -125,20 +149,13 @@ bcrypt = Bcrypt(app)
 
 mail = Mail(app)
 
-socketio = SocketIO(
-    app,
-    cors_allowed_origins='*',
-    async_mode='threading'
-)
+socketio = SocketIO(app, cors_allowed_origins='*')
 
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=[
-        "200 per day",
-        "60 per hour"
-    ],
-    storage_uri="memory://"
+    default_limits=["200 per day", "60 per hour"],
+    storage_uri="memory://",
 )
 
 login_manager = LoginManager(app)
@@ -147,23 +164,18 @@ login_manager.login_view = 'auth.login'
 
 login_manager.login_message_category = 'info'
 
-
-# ════════════════════════════════════════════════════════════════
-# User Loader
-# ════════════════════════════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────────────
+# LOGIN LOADER
+# ──────────────────────────────────────────────────────────────────────
 
 @login_manager.user_loader
 def load_user(user_id):
 
-    return db.session.get(
-        User,
-        int(user_id)
-    )
+    return db.session.get(User, int(user_id))
 
-
-# ════════════════════════════════════════════════════════════════
-# Safe Session Cleanup
-# ════════════════════════════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────────────
+# SESSION CLEANUP
+# ──────────────────────────────────────────────────────────────────────
 
 @app.teardown_appcontext
 def shutdown_session(exception=None):
@@ -173,43 +185,19 @@ def shutdown_session(exception=None):
 
     db.session.remove()
 
-
-# ════════════════════════════════════════════════════════════════
-# JSON Filter
-# ════════════════════════════════════════════════════════════════
-
-@app.template_filter("from_json")
-def from_json_filter(value):
-
-    if not value:
-        return {}
-
-    try:
-        return _json.loads(value)
-
-    except Exception:
-        return {}
-
-
-# ════════════════════════════════════════════════════════════════
-# Database Initialization
-# ════════════════════════════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────────────
+# DATABASE INIT
+# ──────────────────────────────────────────────────────────────────────
 
 with app.app_context():
 
-    db_dir = os.path.join(
-        basedir,
-        'database'
-    )
+    db_dir = os.path.join(basedir, 'database')
 
-    os.makedirs(
-        db_dir,
-        exist_ok=True
-    )
+    os.makedirs(db_dir, exist_ok=True)
 
     db.create_all()
 
-    # Create default super admin
+    # CREATE DEFAULT SUPER ADMIN
 
     if not User.query.filter_by(role='super_admin').first():
 
@@ -217,7 +205,7 @@ with app.app_context():
 
         _b = _B()
 
-        super_admin = User(
+        sa = User(
             name='Super Admin',
             email='superadmin@iut-dhaka.edu',
             password=_b.generate_password_hash(
@@ -225,110 +213,145 @@ with app.app_context():
             ).decode('utf-8'),
             role='super_admin',
             email_verified=True,
-            is_active=True
+            is_active=True,
         )
 
-        db.session.add(super_admin)
+        db.session.add(sa)
 
         db.session.commit()
 
         print(
-            '[IUT] Super Admin Created'
+            '[IUT] Default super_admin created'
         )
 
-
-# ════════════════════════════════════════════════════════════════
-# Session Timeout
-# ════════════════════════════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────────────
+# SESSION TIMEOUT
+# ──────────────────────────────────────────────────────────────────────
 
 @app.before_request
 def check_session_timeout():
 
     if current_user.is_authenticated:
 
-        last_activity = session.get('last_activity')
+        last = session.get('last_activity')
 
-        current_time = datetime.now(
-            timezone.utc
-        ).timestamp()
+        now = datetime.now(timezone.utc).timestamp()
 
-        if last_activity:
+        if last and (now - last) > 30 * 60:
 
-            inactive_time = current_time - last_activity
+            logout_user()
 
-            if inactive_time > 30 * 60:
+            session.clear()
 
-                logout_user()
+            from flask import flash
 
-                session.clear()
+            flash(
+                'Session expired due to inactivity.',
+                'warning'
+            )
 
-                from flask import flash
+            return redirect(url_for('auth.login'))
 
-                flash(
-                    'Session expired due to inactivity.',
-                    'warning'
-                )
-
-                return redirect(
-                    url_for('auth.login')
-                )
-
-        session['last_activity'] = current_time
+        session['last_activity'] = now
 
         session.permanent = True
 
-
-# ════════════════════════════════════════════════════════════════
-# Dynamic Time Slot Generator
-# ════════════════════════════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────────────
+# ADVANCED SLOT GENERATOR
+# ──────────────────────────────────────────────────────────────────────
 
 def generate_time_slots(
     start_str="08:00",
     end_str="17:00",
-    duration=30
+    duration=15,
+    booked_slots=None
 ):
+
+    if booked_slots is None:
+        booked_slots = []
 
     slots = []
 
     fmt = "%H:%M"
 
-    current = datetime.strptime(
-        start_str,
-        fmt
-    )
+    current = datetime.strptime(start_str, fmt)
 
-    end = datetime.strptime(
-        end_str,
-        fmt
-    )
+    end = datetime.strptime(end_str, fmt)
 
-    while current < end:
+    while current + timedelta(minutes=duration) <= end:
 
-        next_time = current + timedelta(
-            minutes=duration
-        )
+        slot_end = current + timedelta(minutes=duration)
 
-        if next_time > end:
-            break
+        overlap = False
 
-        slots.append(
-            f"{current.strftime('%I:%M %p')} - "
-            f"{next_time.strftime('%I:%M %p')}"
-        )
+        for booked_start, booked_end in booked_slots:
 
-        current = next_time
+            if current < booked_end and slot_end > booked_start:
+                overlap = True
+                break
+
+        if not overlap:
+
+            slots.append({
+                'start': current.strftime('%I:%M %p'),
+                'end': slot_end.strftime('%I:%M %p'),
+                'duration': duration
+            })
+
+        current += timedelta(minutes=duration)
 
     return slots
 
+# ──────────────────────────────────────────────────────────────────────
+# CONFLICT CHECKER
+# ──────────────────────────────────────────────────────────────────────
 
-# ════════════════════════════════════════════════════════════════
-# QR Code Generator
-# ════════════════════════════════════════════════════════════════
-
-def generate_qr_data(
-    appointment_id,
-    token
+def has_conflict(
+    officer_id,
+    appointment_date,
+    start_time,
+    end_time
 ):
+
+    existing = Appointment.query.filter(
+        Appointment.officer_id == officer_id,
+        Appointment.appointment_date == appointment_date,
+        Appointment.start_time < end_time,
+        Appointment.end_time > start_time,
+        Appointment.appointment_status != 'Rejected'
+    ).first()
+
+    return existing is not None
+
+# ──────────────────────────────────────────────────────────────────────
+# APPOINTMENT HISTORY LOGGER
+# ──────────────────────────────────────────────────────────────────────
+
+def log_appointment_action(
+    appointment_id,
+    action,
+    old_value=None,
+    new_value=None,
+    changed_by=None
+):
+
+    history = AppointmentHistory(
+        appointment_id=appointment_id,
+        action=action,
+        old_value=old_value,
+        new_value=new_value,
+        changed_by=changed_by
+    )
+
+    db.session.add(history)
+
+    db.session.commit()
+
+# ──────────────────────────────────────────────────────────────────────
+# QR GENERATOR
+# ──────────────────────────────────────────────────────────────────────
+
+def generate_qr_data(appointment_id, token):
 
     import io
     import base64
@@ -354,35 +377,46 @@ def generate_qr_data(
             back_color="white"
         )
 
-        buffer = io.BytesIO()
+        buf = io.BytesIO()
 
-        img.save(buffer, format='PNG')
+        img.save(buf, format='PNG')
 
-        qr_base64 = base64.b64encode(
-            buffer.getvalue()
+        b64 = base64.b64encode(
+            buf.getvalue()
         ).decode()
-
-        return data, qr_base64
 
     except Exception:
 
-        return data, ""
+        b64 = ""
 
+    return data, b64
 
-# ════════════════════════════════════════════════════════════════
-# Socket.IO Realtime Events
-# ════════════════════════════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────────────
+# SOCKET EVENTS
+# ──────────────────────────────────────────────────────────────────────
 
 @socketio.on('join')
 def on_join(data):
 
-    room = str(
-        data.get('user_id', '')
-    )
+    room = str(data.get('user_id', ''))
 
     if room:
         join_room(room)
 
+@socketio.on('join_booking_room')
+def join_booking_room(data):
+
+    officer_id = data.get('officer_id')
+
+    date = data.get('date')
+
+    room = f"{officer_id}_{date}"
+
+    join_room(room)
+
+# ──────────────────────────────────────────────────────────────────────
+# REALTIME STATUS UPDATE
+# ──────────────────────────────────────────────────────────────────────
 
 def push_status_update(
     user_id,
@@ -399,57 +433,94 @@ def push_status_update(
             'message': message,
             'timestamp': datetime.now(
                 timezone.utc
-            ).isoformat()
+            ).isoformat(),
         },
         room=str(user_id)
     )
 
+# ──────────────────────────────────────────────────────────────────────
+# SLOT UPDATE
+# ──────────────────────────────────────────────────────────────────────
 
-# ════════════════════════════════════════════════════════════════
-# Error Handlers
-# ════════════════════════════════════════════════════════════════
+def push_slot_update(officer_id, date):
+
+    socketio.emit(
+        'slot_update',
+        {
+            'officer_id': officer_id,
+            'date': str(date)
+        },
+        broadcast=True
+    )
+
+# ──────────────────────────────────────────────────────────────────────
+# TEMPLATE VARIABLES
+# ──────────────────────────────────────────────────────────────────────
+
+@app.context_processor
+def inject_booking_settings():
+
+    return dict(
+        DEFAULT_TIMEZONE=app.config['DEFAULT_TIMEZONE'],
+        DEFAULT_SLOT_DURATION=app.config['DEFAULT_SLOT_DURATION'],
+        BOOKING_START_HOUR=app.config['BOOKING_START_HOUR'],
+        BOOKING_END_HOUR=app.config['BOOKING_END_HOUR']
+    )
+
+# ──────────────────────────────────────────────────────────────────────
+# ERROR HANDLERS
+# ──────────────────────────────────────────────────────────────────────
 
 @app.errorhandler(404)
-def not_found(error):
+def not_found(e):
 
     return render_template(
         'errors/404.html'
     ), 404
 
-
 @app.errorhandler(500)
-def server_error(error):
+def server_error(e):
 
     return render_template(
         'errors/500.html'
     ), 500
 
-
 @app.errorhandler(403)
-def forbidden(error):
+def forbidden(e):
 
     return render_template(
         'errors/403.html'
     ), 403
 
-
 @app.errorhandler(429)
-def rate_limit(error):
+def rate_limited(e):
 
     return render_template(
         'errors/429.html'
     ), 429
 
+@app.errorhandler(400)
+def bad_request(e):
 
-# ════════════════════════════════════════════════════════════════
-# Register Blueprints
-# ════════════════════════════════════════════════════════════════
+    return render_template(
+        'errors/400.html'
+    ), 400
+
+# ──────────────────────────────────────────────────────────────────────
+# BLUEPRINTS
+# ──────────────────────────────────────────────────────────────────────
 
 from routes.auth import auth_bp
+
 from routes.student import student_bp
+
 from routes.admin import admin_bp
+
 from routes.officer import officer_bp
+
 from routes.super_admin import super_admin_bp
+
+from routes.api import api_bp
 
 app.register_blueprint(auth_bp)
 
@@ -461,14 +532,15 @@ app.register_blueprint(officer_bp)
 
 app.register_blueprint(super_admin_bp)
 
-limiter.limit(
-    "10 per minute"
-)(auth_bp)
+app.register_blueprint(api_bp, url_prefix='/api')
 
+# RATE LIMIT
 
-# ════════════════════════════════════════════════════════════════
-# Home Route
-# ════════════════════════════════════════════════════════════════
+limiter.limit("10 per minute")(auth_bp)
+
+# ──────────────────────────────────────────────────────────────────────
+# ROOT ROUTE
+# ──────────────────────────────────────────────────────────────────────
 
 @app.route('/')
 def index():
@@ -478,88 +550,91 @@ def index():
         role = current_user.role
 
         if role == 'super_admin':
-
             return redirect(
-                url_for(
-                    'super_admin.dashboard'
-                )
+                url_for('super_admin.dashboard')
             )
 
         if role == 'admin':
-
             return redirect(
-                url_for(
-                    'admin.dashboard'
-                )
+                url_for('admin.dashboard')
             )
 
         if role == 'officer':
-
             return redirect(
-                url_for(
-                    'officer.dashboard'
-                )
+                url_for('officer.dashboard')
             )
 
         return redirect(
-            url_for(
-                'student.dashboard'
-            )
+            url_for('student.dashboard')
         )
 
-    return render_template(
-        'home.html'
-    )
+    return render_template('home.html')
 
-
-# ════════════════════════════════════════════════════════════════
-# Notification API
-# ════════════════════════════════════════════════════════════════
+# ──────────────────────────────────────────────────────────────────────
+# UNREAD NOTIFICATIONS API
+# ──────────────────────────────────────────────────────────────────────
 
 @app.route('/api/notifications/unread-count')
 def unread_count():
 
-    from models import Notification
-
     if not current_user.is_authenticated:
-
-        return jsonify({
-            'count': 0
-        })
+        return {'count': 0}
 
     try:
 
-        unread = Notification.query.filter_by(
+        count = Notification.query.filter_by(
             user_id=current_user.id,
             is_read=False
         ).count()
 
-        return jsonify({
-            'count': unread
-        })
+        return {'count': count}
 
     except Exception:
 
         db.session.rollback()
 
-        return jsonify({
-            'count': 0
-        })
+        return {'count': 0}
 
+# ──────────────────────────────────────────────────────────────────────
+# BOOKING HEALTH CHECK
+# ──────────────────────────────────────────────────────────────────────
 
-# ════════════════════════════════════════════════════════════════
-# Main Entry
-# ════════════════════════════════════════════════════════════════
+@app.route('/api/booking/health')
+def booking_health():
+
+    return {
+        'success': True,
+        'message': 'Advanced booking system active',
+        'timezone': app.config['DEFAULT_TIMEZONE']
+    }
+
+# ──────────────────────────────────────────────────────────────────────
+# SECURITY HEADERS
+# ──────────────────────────────────────────────────────────────────────
+
+@app.after_request
+def add_security_headers(response):
+
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+
+    response.headers['Referrer-Policy'] = (
+        'strict-origin-when-cross-origin'
+    )
+
+    return response
+
+# ──────────────────────────────────────────────────────────────────────
+# RUN SERVER
+# ──────────────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
 
-    port = int(
-        os.environ.get('PORT', 5000)
-    )
+    port = int(os.environ.get('PORT', 5000))
 
     debug = (
-        os.environ.get('FLASK_ENV')
-        == 'development'
+        os.environ.get('FLASK_ENV') == 'development'
     )
 
     socketio.run(
@@ -569,3 +644,4 @@ if __name__ == '__main__':
         debug=debug,
         allow_unsafe_werkzeug=True
     )
+```
