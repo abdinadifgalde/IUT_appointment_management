@@ -1,4 +1,5 @@
 import os
+import json as _json
 
 from flask import Flask, redirect, url_for, render_template, session, request as flask_request
 from flask_login import LoginManager, current_user, logout_user
@@ -36,11 +37,11 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=30)
 
 # ── Flask-Mail ────────────────────────────────────────────────────────────────
-app.config['MAIL_SERVER']        = 'smtp.gmail.com'
-app.config['MAIL_PORT']          = 587
-app.config['MAIL_USE_TLS']       = True
-app.config['MAIL_USERNAME']      = os.environ.get('MAIL_USERNAME', '')
-app.config['MAIL_PASSWORD']      = os.environ.get('MAIL_PASSWORD', '')
+app.config['MAIL_SERVER']         = 'smtp.gmail.com'
+app.config['MAIL_PORT']           = 587
+app.config['MAIL_USE_TLS']        = True
+app.config['MAIL_USERNAME']       = os.environ.get('MAIL_USERNAME', '')
+app.config['MAIL_PASSWORD']       = os.environ.get('MAIL_PASSWORD', '')
 app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_USERNAME', 'noreply@iut-dhaka.edu')
 
 # ── Extensions ────────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ db.init_app(app)
 migrate  = Migrate(app, db)
 bcrypt   = Bcrypt(app)
 mail     = Mail(app)
-socketio = SocketIO(app, cors_allowed_origins='*')
+socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
 limiter = Limiter(
     get_remote_address,
@@ -59,7 +60,7 @@ limiter = Limiter(
 )
 
 login_manager = LoginManager(app)
-login_manager.login_view          = 'auth.login'
+login_manager.login_view             = 'auth.login'
 login_manager.login_message_category = 'info'
 
 @login_manager.user_loader
@@ -71,6 +72,17 @@ def shutdown_session(exception=None):
     if exception:
         db.session.rollback()
     db.session.remove()
+
+# ── Jinja2 custom filters ─────────────────────────────────────────────────────
+@app.template_filter("from_json")
+def from_json_filter(value):
+    """Parse a JSON string in templates: {{ some_field | from_json }}"""
+    if not value:
+        return {}
+    try:
+        return _json.loads(value)
+    except Exception:
+        return {}
 
 # ── DB init + auto-migrations ─────────────────────────────────────────────────
 with app.app_context():
@@ -95,9 +107,6 @@ with app.app_context():
         print('[IUT] Default super_admin created: superadmin@iut-dhaka.edu / SuperAdmin@2026!')
 
     # ── WaitlistEntry migration: appointment_id → slot-based ─────────────────
-    # Runs on every deploy but only does real work the first time.
-    # Converts the old appointment_id FK to (officer_id, slot_date, slot_time)
-    # so the waitlist survives appointment cancellations and reschedules.
     try:
         from sqlalchemy import text, inspect as sa_inspect
         inspector  = sa_inspect(db.engine)
@@ -111,19 +120,11 @@ with app.app_context():
             print('[IUT] Migrating WaitlistEntry to slot-based schema…')
             with db.engine.connect() as conn:
 
-                # Step 1 — add new nullable columns
-                conn.execute(text(
-                    "ALTER TABLE waitlist_entry ADD COLUMN officer_id INTEGER"
-                ))
-                conn.execute(text(
-                    "ALTER TABLE waitlist_entry ADD COLUMN slot_date DATE"
-                ))
-                conn.execute(text(
-                    "ALTER TABLE waitlist_entry ADD COLUMN slot_time VARCHAR(30)"
-                ))
+                conn.execute(text("ALTER TABLE waitlist_entry ADD COLUMN officer_id INTEGER"))
+                conn.execute(text("ALTER TABLE waitlist_entry ADD COLUMN slot_date DATE"))
+                conn.execute(text("ALTER TABLE waitlist_entry ADD COLUMN slot_time VARCHAR(30)"))
                 conn.commit()
 
-                # Step 2 — backfill from the joined appointment row
                 if is_pg:
                     conn.execute(text("""
                         UPDATE waitlist_entry we
@@ -134,7 +135,6 @@ with app.app_context():
                         WHERE a.id = we.appointment_id
                     """))
                 else:
-                    # SQLite uses correlated subqueries
                     conn.execute(text("""
                         UPDATE waitlist_entry
                         SET officer_id = (
@@ -150,7 +150,6 @@ with app.app_context():
                     """))
                 conn.commit()
 
-                # Step 3 — remove orphaned rows that couldn't be backfilled
                 deleted = conn.execute(text(
                     "DELETE FROM waitlist_entry WHERE officer_id IS NULL"
                 )).rowcount
@@ -158,19 +157,14 @@ with app.app_context():
                     print(f'[IUT] Removed {deleted} orphaned waitlist entries.')
                 conn.commit()
 
-                # Step 4 — drop the old column
                 if is_pg:
-                    conn.execute(text(
-                        "ALTER TABLE waitlist_entry DROP COLUMN IF EXISTS appointment_id"
-                    ))
-                    # Add unique constraint at DB level
+                    conn.execute(text("ALTER TABLE waitlist_entry DROP COLUMN IF EXISTS appointment_id"))
                     conn.execute(text("""
                         ALTER TABLE waitlist_entry
                         ADD CONSTRAINT uq_waitlist_student_slot
                         UNIQUE (officer_id, slot_date, slot_time, user_id)
                     """))
                 else:
-                    # SQLite cannot DROP columns — rebuild the table
                     conn.execute(text("""
                         CREATE TABLE waitlist_entry_new (
                             id             INTEGER PRIMARY KEY,
@@ -197,15 +191,12 @@ with app.app_context():
                         WHERE officer_id IS NOT NULL
                     """))
                     conn.execute(text("DROP TABLE waitlist_entry"))
-                    conn.execute(text(
-                        "ALTER TABLE waitlist_entry_new RENAME TO waitlist_entry"
-                    ))
+                    conn.execute(text("ALTER TABLE waitlist_entry_new RENAME TO waitlist_entry"))
                 conn.commit()
 
             print('[IUT] WaitlistEntry migration complete ✅')
 
         else:
-            # Fresh install — waitlist_entry may not exist yet; db.create_all() handles it
             print('[IUT] WaitlistEntry table is new — no migration needed.')
 
     except Exception as _mig_err:
@@ -242,7 +233,6 @@ def generate_time_slots(start_str="08:00", end_str="17:00"):
 
 # ── QR code generator ─────────────────────────────────────────────────────────
 def generate_qr_data(appointment_id, token):
-    """Returns the QR payload string and a base64-encoded PNG."""
     import io, base64
     data = f"APT-{appointment_id}-{token}"
     try:
@@ -272,13 +262,11 @@ def generate_qr_data(appointment_id, token):
 # ── Socket.IO events ──────────────────────────────────────────────────────────
 @socketio.on('join')
 def on_join(data):
-    """Client joins a room named after their user_id for live notifications."""
     room = str(data.get('user_id', ''))
     if room:
         join_room(room)
 
 def push_status_update(user_id, appointment_id, status, message):
-    """Emit a real-time status update to the student's socket room."""
     socketio.emit('appointment_update', {
         'appointment_id': appointment_id,
         'status':         status,
@@ -302,10 +290,10 @@ def rate_limited(e): return render_template('errors/429.html'), 429
 
 
 # ── Blueprints ────────────────────────────────────────────────────────────────
-from routes.auth       import auth_bp
-from routes.student    import student_bp
-from routes.admin      import admin_bp
-from routes.officer    import officer_bp
+from routes.auth        import auth_bp
+from routes.student     import student_bp
+from routes.admin       import admin_bp
+from routes.officer     import officer_bp
 from routes.super_admin import super_admin_bp
 
 app.register_blueprint(auth_bp)
@@ -314,7 +302,6 @@ app.register_blueprint(admin_bp)
 app.register_blueprint(officer_bp)
 app.register_blueprint(super_admin_bp)
 
-# Apply stricter rate limiting to auth routes
 limiter.limit("10 per minute")(auth_bp)
 
 
