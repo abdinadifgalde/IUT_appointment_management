@@ -1,0 +1,395 @@
+{% extends "layout.html" %}
+
+{% block title %}
+Book Appointment
+{% endblock %}
+
+{% block content %}
+
+<link
+    rel="stylesheet"
+    href="{{ url_for('static', filename='css/cal_style.css') }}"
+>
+
+<div class="container-fluid py-4">
+
+    <div class="booking-wrapper">
+
+        <!-- LEFT PANEL -->
+
+        <div class="booking-sidebar">
+
+            <div class="officer-profile">
+
+                <img
+                    src="{{ url_for('static', filename='images/' + officer.profile_image) }}"
+                    class="profile-image"
+                >
+
+                <h3>
+                    {{ officer.name }}
+                </h3>
+
+                <p class="department-text">
+                    {{ officer.department }}
+                </p>
+
+            </div>
+
+            <div class="booking-info">
+
+                <h4>
+                    Room Booking at Office
+                </h4>
+
+                <div class="info-item">
+
+                    <span class="icon">
+                        🕒
+                    </span>
+
+                    <span>
+                        {{ DEFAULT_SLOT_DURATION }} Minutes
+                    </span>
+
+                </div>
+
+                <div class="info-item">
+
+                    <span class="icon">
+                        📍
+                    </span>
+
+                    <span>
+                        IUT Campus
+                    </span>
+
+                </div>
+
+                <div class="info-item">
+
+                    <span class="icon">
+                        🌍
+                    </span>
+
+                    <span>
+                        {{ DEFAULT_TIMEZONE }}
+                    </span>
+
+                </div>
+
+                <div class="info-item">
+
+                    <span class="icon">
+                        🎥
+                    </span>
+
+                    <span>
+                        In-person Meeting
+                    </span>
+
+                </div>
+
+            </div>
+
+            <!-- DURATION PICKER -->
+
+            <div class="duration-section">
+
+                <h5>
+                    Select Duration
+                </h5>
+
+                <div class="duration-buttons">
+
+                    <button
+                        class="duration-btn active"
+                        data-duration="15"
+                    >
+                        15m
+                    </button>
+
+                    <button
+                        class="duration-btn"
+                        data-duration="30"
+                    >
+                        30m
+                    </button>
+
+                    <button
+                        class="duration-btn"
+                        data-duration="45"
+                    >
+                        45m
+                    </button>
+
+                    <button
+                        class="duration-btn"
+                        data-duration="60"
+                    >
+                        1h
+                    </button>
+
+                </div>
+
+            </div>
+
+            <!-- 12H / 24H -->
+
+            <div class="time-format-section">
+
+                <label class="form-label">
+                    Time Format
+                </label>
+
+                <select
+                    id="timeFormat"
+                    class="form-select"
+                >
+                    <option value="12">
+                        12 Hour
+                    </option>
+
+                    <option value="24">
+                        24 Hour
+                    </option>
+
+                </select>
+
+            </div>
+
+            <!-- OVERLAY -->
+
+            <div class="overlay-section">
+
+                <div class="form-check form-switch">
+
+                    <input
+                        class="form-check-input"
+                        type="checkbox"
+                        id="overlayCalendar"
+                    >
+
+                    <label
+                        class="form-check-label"
+                        for="overlayCalendar"
+                    >
+                        Overlay my calendar
+                    </label>
+
+                </div>
+
+            </div>
+
+        </div>
+
+        <!-- CENTER CALENDAR -->
+
+        <div class="calendar-section">
+
+            <div class="calendar-header">
+
+                <button
+                    class="nav-btn"
+                    id="prevMonth"
+                >
+                    ←
+                </button>
+
+                <h3 id="monthYear"></h3>
+
+                <button
+                    class="nav-btn"
+                    id="nextMonth"
+                >
+                    →
+                </button>
+
+            </div>
+
+            <div class="calendar-grid">
+
+                <div class="day-name">Sun</div>
+                <div class="day-name">Mon</div>
+                <div class="day-name">Tue</div>
+                <div class="day-name">Wed</div>
+                <div class="day-name">Thu</div>
+                <div class="day-name">Fri</div>
+                <div class="day-name">Sat</div>
+
+                <div id="calendarDays"></div>
+
+            </div>
+
+        </div>
+
+        <!-- RIGHT SLOT PANEL -->
+
+        <div class="slot-section">
+
+            <div class="slot-header">
+
+                <h4>
+                    Available Slots
+                </h4>
+
+                <p id="selectedDateText">
+                    Select a date
+                </p>
+
+            </div>
+
+            <div
+                class="slot-list"
+                id="slotList"
+            >
+
+                <div class="empty-slot-message">
+
+                    Select a date to load slots
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+<!-- BOOKING MODAL -->
+
+<div
+    class="modal fade"
+    id="bookingModal"
+    tabindex="-1"
+>
+
+    <div class="modal-dialog">
+
+        <div class="modal-content">
+
+            <div class="modal-header">
+
+                <h5 class="modal-title">
+                    Confirm Booking
+                </h5>
+
+                <button
+                    type="button"
+                    class="btn-close"
+                    data-bs-dismiss="modal"
+                ></button>
+
+            </div>
+
+            <div class="modal-body">
+
+                <form
+                    id="bookingForm"
+                    method="POST"
+                    action="{{ url_for('student.create_appointment') }}"
+                >
+
+                    <input
+                        type="hidden"
+                        name="officer_id"
+                        value="{{ officer.id }}"
+                    >
+
+                    <input
+                        type="hidden"
+                        name="appointment_date"
+                        id="appointmentDate"
+                    >
+
+                    <input
+                        type="hidden"
+                        name="start_time"
+                        id="appointmentStart"
+                    >
+
+                    <input
+                        type="hidden"
+                        name="end_time"
+                        id="appointmentEnd"
+                    >
+
+                    <input
+                        type="hidden"
+                        name="duration"
+                        id="appointmentDuration"
+                    >
+
+                    <div class="mb-3">
+
+                        <label class="form-label">
+                            Title
+                        </label>
+
+                        <input
+                            type="text"
+                            class="form-control"
+                            name="title"
+                            required
+                        >
+
+                    </div>
+
+                    <div class="mb-3">
+
+                        <label class="form-label">
+                            Notes
+                        </label>
+
+                        <textarea
+                            class="form-control"
+                            name="notes"
+                            rows="4"
+                        ></textarea>
+
+                    </div>
+
+                    <div class="booking-summary">
+
+                        <h6>
+                            Booking Summary
+                        </h6>
+
+                        <p id="summaryText"></p>
+
+                    </div>
+
+                    <button
+                        type="submit"
+                        class="btn btn-primary w-100"
+                    >
+                        Confirm Booking
+                    </button>
+
+                </form>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+<script>
+
+    const officerId = "{{ officer.id }}";
+
+</script>
+
+<script
+    src="{{ url_for('static', filename='js/calendar.js') }}"
+></script>
+
+<script
+    src="{{ url_for('static', filename='js/booking.js') }}"
+></script>
+
+{% endblock %}
