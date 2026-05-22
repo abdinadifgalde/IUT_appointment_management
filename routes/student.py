@@ -11,8 +11,8 @@ bcrypt = Bcrypt()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-MAX_WAITLIST_PER_STUDENT = 3   # max simultaneous waitlist entries per student
-WAITLIST_CUTOFF_MINUTES  = 60  # skip promotion if appointment is within this many minutes
+MAX_WAITLIST_PER_STUDENT = 3
+WAITLIST_CUTOFF_MINUTES  = 60
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -26,7 +26,6 @@ def get_unavailability(officer_id, date):
 
 
 def officer_slots_for_date(officer, date):
-    """Return list of time-slot strings for this officer on this date, respecting working hours."""
     from app import generate_time_slots
     weekday  = date.weekday()
     override = next((wh for wh in officer.working_hours if wh.weekday == weekday), None)
@@ -48,7 +47,6 @@ def daily_count(officer_id, date):
 
 
 def build_qr_data(apt):
-    """Build human-readable QR code string for an appointment."""
     return (
         f"Appointment ID: {apt.id}\n"
         f"Student Name: {apt.student_name}\n"
@@ -64,12 +62,22 @@ def build_qr_data(apt):
 
 
 def slot_appointment(officer_id, date, time):
-    """Return the active appointment occupying a specific slot, or None."""
     return Appointment.query.filter_by(
         officer_id=officer_id,
         date=date,
         time=time,
     ).filter(Appointment.status.in_(['Pending', 'Approved'])).first()
+
+
+def _compute_end_time(start_time_str, duration_minutes):
+    """Given a slot string like '09:00 AM - 10:00 AM' or '09:00 AM', compute end time."""
+    try:
+        start_part = start_time_str.split(' - ')[0].strip()
+        start_dt   = datetime.strptime(start_part, '%I:%M %p')
+        end_dt     = start_dt + timedelta(minutes=int(duration_minutes))
+        return end_dt.strftime('%I:%M %p')
+    except Exception:
+        return ''
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -104,16 +112,14 @@ def dashboard():
         .all()
     )
 
-    # Waitlist entries for this student — keyed on slot, with position
     waitlist_entries = (
         WaitlistEntry.query
         .filter_by(user_id=current_user.id)
         .order_by(WaitlistEntry.joined_at)
         .all()
     )
-    # Annotate each entry with queue position and slot info
     for entry in waitlist_entries:
-        position = (
+        entry.queue_position = (
             WaitlistEntry.query
             .filter_by(
                 officer_id=entry.officer_id,
@@ -123,7 +129,6 @@ def dashboard():
             .filter(WaitlistEntry.joined_at <= entry.joined_at)
             .count()
         )
-        entry.queue_position = position
 
     return render_template(
         'student/dashboard.html',
@@ -165,17 +170,35 @@ def book_appointment():
         if current_user.department:
             form.department.data = current_user.department
 
+        # Pre-fill from Smart Book wizard params
+        wizard_officer = request.args.get('officer_id', type=int)
+        wizard_date    = request.args.get('date', '')
+        wizard_time    = request.args.get('time', '')
+        wizard_duration = request.args.get('duration', type=int)
+
+        if wizard_officer:
+            form.officer.data = wizard_officer
+        if wizard_date:
+            try:
+                form.date.data = datetime.strptime(wizard_date, '%Y-%m-%d').date()
+            except ValueError:
+                pass
+        if wizard_time:
+            form.time.data = wizard_time
+        if wizard_duration:
+            # Store duration in a hidden field via query param
+            pass
+
     if form.validate_on_submit():
         booking_date = form.date.data
         day_name     = booking_date.strftime('%A')
         officer      = db.session.get(Officer, form.officer.data)
+        duration     = request.form.get('duration', 15, type=int)
 
-        # ── Day-off check ─────────────────────────────────────────────────────
         if is_day_off(officer, booking_date):
             flash(f'{officer.name} does not take appointments on {day_name}s.', 'danger')
             return render_template('student/book.html', form=form)
 
-        # ── Unavailability check ──────────────────────────────────────────────
         unavail = get_unavailability(officer.id, booking_date)
         if unavail:
             flash(
@@ -186,12 +209,10 @@ def book_appointment():
             )
             return render_template('student/book.html', form=form)
 
-        # ── Daily limit check ─────────────────────────────────────────────────
         if officer.daily_limit > 0 and daily_count(officer.id, booking_date) >= officer.daily_limit:
             flash(f'{officer.name} has reached the maximum appointments for that day.', 'danger')
             return render_template('student/book.html', form=form)
 
-        # ── Student schedule conflict check ───────────────────────────────────
         student_conflict = Appointment.query.filter_by(
             user_id=current_user.id,
             date=booking_date,
@@ -201,10 +222,8 @@ def book_appointment():
             flash('You already have an appointment at this time.', 'danger')
             return render_template('student/book.html', form=form)
 
-        # ── Slot collision check → offer waitlist ─────────────────────────────
         taken = slot_appointment(officer.id, booking_date, form.time.data)
         if taken:
-            # Count how many are already waiting for this slot
             waiters = WaitlistEntry.query.filter_by(
                 officer_id=officer.id,
                 slot_date=booking_date,
@@ -228,7 +247,8 @@ def book_appointment():
                 waitlist_student_name=form.student_name.data,
             )
 
-        # ── Create appointment ────────────────────────────────────────────────
+        end_time = _compute_end_time(form.time.data, duration)
+
         apt = Appointment(
             user_id=current_user.id,
             student_name=form.student_name.data,
@@ -240,13 +260,16 @@ def book_appointment():
             time=form.time.data,
             issue=form.issue.data,
             status='Pending',
+            duration=duration,
+            end_time=end_time,
+            meeting_type=request.form.get('meeting_type', 'in-person'),
         )
         db.session.add(apt)
 
         current_user.student_id_num = form.student_id_num.data
         current_user.department     = form.department.data
 
-        db.session.flush()          # get apt.id before commit
+        db.session.flush()
         apt.qr_code_data = build_qr_data(apt)
 
         from models import AppointmentTimeline
@@ -258,17 +281,110 @@ def book_appointment():
 
         db.session.commit()
 
-        from utils import send_email, booking_confirmation_email
-        send_email(
-            "Appointment Booked — IUT Appointments",
-            [current_user.email],
-            booking_confirmation_email(apt, current_user)
-        )
+        try:
+            from utils import send_email, booking_confirmation_email
+            send_email(
+                "Appointment Booked — IUT Appointments",
+                [current_user.email],
+                booking_confirmation_email(apt, current_user)
+            )
+        except Exception:
+            pass
 
         flash('Appointment booked successfully! Waiting for approval.', 'success')
         return redirect(url_for('student.dashboard'))
 
     return render_template('student/book.html', form=form)
+
+
+# ── Smart Book wizard ─────────────────────────────────────────────────────────
+
+@student_bp.route('/student/book-wizard')
+@login_required
+def book_wizard():
+    if current_user.role != 'student':
+        return redirect(url_for('index'))
+    officers = Officer.query.filter_by(is_active=True).all()
+    return render_template('student/duration_picker.html', officers=officers)
+
+
+# ── Duration-aware slots API ──────────────────────────────────────────────────
+
+@student_bp.route('/student/api/slots-by-duration')
+@login_required
+def slots_by_duration():
+    """
+    Returns available slots for a given officer/date/duration combo.
+    A slot is available only if no overlapping appointment exists
+    within the requested duration window.
+    """
+    officer_id = request.args.get('officer', type=int)
+    date_str   = request.args.get('date', '')
+    duration   = request.args.get('duration', 15, type=int)
+
+    if not officer_id or not date_str:
+        return jsonify({'slots': [], 'error': 'Missing params'})
+
+    try:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'slots': [], 'error': 'Invalid date'})
+
+    officer = db.session.get(Officer, officer_id)
+    if not officer:
+        return jsonify({'slots': [], 'error': 'Officer not found'})
+
+    if is_day_off(officer, date_obj):
+        return jsonify({'slots': [], 'unavailable': True, 'reason': 'Day off'})
+
+    unavail = get_unavailability(officer_id, date_obj)
+    if unavail:
+        return jsonify({'slots': [], 'unavailable': True, 'reason': unavail.reason})
+
+    all_slots = officer_slots_for_date(officer, date_obj)
+
+    # Get all active appointments for this officer on this date
+    booked = Appointment.query.filter(
+        Appointment.officer_id == officer_id,
+        Appointment.date == date_obj,
+        Appointment.status.in_(['Pending', 'Approved'])
+    ).all()
+
+    def parse_start(time_str):
+        try:
+            return datetime.strptime(time_str.split(' - ')[0].strip(), '%I:%M %p')
+        except Exception:
+            return None
+
+    available = []
+    for slot in all_slots:
+        slot_start = parse_start(slot)
+        if not slot_start:
+            continue
+        slot_end = slot_start + timedelta(minutes=duration)
+
+        # Check overlap with any booked appointment
+        overlap = False
+        for b in booked:
+            b_start = parse_start(b.time)
+            if not b_start:
+                continue
+            b_end = b_start + timedelta(minutes=b.duration or 15)
+            # Overlap if intervals intersect
+            if slot_start < b_end and slot_end > b_start:
+                overlap = True
+                break
+
+        if not overlap:
+            end_time_str = slot_end.strftime('%I:%M %p')
+            available.append({
+                'time':     slot,
+                'start':    slot_start.strftime('%I:%M %p'),
+                'end':      end_time_str,
+                'label':    f"{slot_start.strftime('%I:%M %p')} – {end_time_str}",
+            })
+
+    return jsonify({'slots': available, 'unavailable': False})
 
 
 # ── Cancel ────────────────────────────────────────────────────────────────────
@@ -335,7 +451,6 @@ def reschedule_appointment(appointment_id):
             flash('That slot is already taken. Please pick another.', 'danger')
             return render_template('student/reschedule.html', form=form, apt=apt)
 
-        # Student self-conflict at new slot
         self_conflict = Appointment.query.filter_by(
             user_id=current_user.id, date=new_date, time=new_time
         ).filter(
@@ -350,13 +465,13 @@ def reschedule_appointment(appointment_id):
         old_date       = apt.date
         old_time       = apt.time
 
-        apt.date   = new_date
-        apt.time   = new_time
-        apt.day    = day_name
-        apt.status = 'Pending'
+        apt.date     = new_date
+        apt.time     = new_time
+        apt.day      = day_name
+        apt.status   = 'Pending'
+        apt.end_time = _compute_end_time(new_time, apt.duration or 15)
         db.session.flush()
 
-        # Promote someone from the old slot's waitlist
         _promote_waitlist(old_officer_id, old_date, old_time)
 
         db.session.commit()
@@ -375,11 +490,6 @@ def reschedule_appointment(appointment_id):
 @student_bp.route('/student/waitlist/join', methods=['POST'])
 @login_required
 def join_waitlist():
-    """
-    Join the waitlist for a specific (officer, date, time) slot.
-    All three identifiers come from the form, NOT from an appointment_id,
-    so the waitlist survives appointment cancellations and reschedules.
-    """
     officer_id     = request.form.get('officer_id', type=int)
     slot_date_str  = request.form.get('slot_date', '')
     slot_time      = request.form.get('slot_time', '').strip()
@@ -388,7 +498,6 @@ def join_waitlist():
     department     = request.form.get('department',     current_user.department or '').strip()
     issue          = request.form.get('issue', '').strip()
 
-    # Validate inputs
     if not officer_id or not slot_date_str or not slot_time:
         flash('Missing slot information. Please try booking again.', 'danger')
         return redirect(url_for('student.book_appointment'))
@@ -404,13 +513,11 @@ def join_waitlist():
         flash('Officer not found.', 'danger')
         return redirect(url_for('student.book_appointment'))
 
-    # Slot must still be taken (no point joining if it's now open)
     taken = slot_appointment(officer_id, slot_date, slot_time)
     if not taken:
         flash('That slot is now available — go ahead and book it directly!', 'info')
         return redirect(url_for('student.book_appointment'))
 
-    # Enforce per-student waitlist cap
     active_count = WaitlistEntry.query.filter_by(user_id=current_user.id).count()
     if active_count >= MAX_WAITLIST_PER_STUDENT:
         flash(
@@ -420,7 +527,6 @@ def join_waitlist():
         )
         return redirect(url_for('student.dashboard'))
 
-    # Duplicate check for this exact slot
     already = WaitlistEntry.query.filter_by(
         officer_id=officer_id,
         slot_date=slot_date,
@@ -431,7 +537,6 @@ def join_waitlist():
         flash('You are already on the waitlist for this slot.', 'info')
         return redirect(url_for('student.dashboard'))
 
-    # Calculate queue position before inserting
     current_waiters = WaitlistEntry.query.filter_by(
         officer_id=officer_id,
         slot_date=slot_date,
@@ -476,7 +581,6 @@ def leave_waitlist(entry_id):
 @student_bp.route('/student/waitlist')
 @login_required
 def my_waitlist():
-    """Dedicated page showing the student's waitlist entries with positions."""
     entries = (
         WaitlistEntry.query
         .filter_by(user_id=current_user.id)
@@ -485,7 +589,6 @@ def my_waitlist():
     )
     now = datetime.now(timezone.utc)
     for entry in entries:
-        # Queue position
         entry.queue_position = (
             WaitlistEntry.query
             .filter_by(
@@ -496,35 +599,25 @@ def my_waitlist():
             .filter(WaitlistEntry.joined_at <= entry.joined_at)
             .count()
         )
-        # Total waiters for this slot
         entry.total_waiters = WaitlistEntry.query.filter_by(
             officer_id=entry.officer_id,
             slot_date=entry.slot_date,
             slot_time=entry.slot_time,
         ).count()
-        # Warn if the appointment is very soon
-        slot_dt = datetime.combine(entry.slot_date, datetime.strptime(
-            entry.slot_time.split(' - ')[0].strip(), '%I:%M %p'
-        ).time()).replace(tzinfo=timezone.utc)
-        entry.is_imminent = (slot_dt - now) < timedelta(hours=2)
+        try:
+            slot_dt = datetime.combine(entry.slot_date, datetime.strptime(
+                entry.slot_time.split(' - ')[0].strip(), '%I:%M %p'
+            ).time()).replace(tzinfo=timezone.utc)
+            entry.is_imminent = (slot_dt - now) < timedelta(hours=2)
+        except Exception:
+            entry.is_imminent = False
 
     return render_template('student/waitlist.html', entries=entries)
 
 
 def _promote_waitlist(officer_id, slot_date, slot_time):
-    """
-    When a slot (officer_id, slot_date, slot_time) opens up, promote the
-    first eligible waitlist entry to a new Appointment.
-
-    Key fixes vs original:
-      - Keyed on (officer_id, slot_date, slot_time), NOT appointment_id
-      - Skips promotion if appointment is within WAITLIST_CUTOFF_MINUTES
-      - Checks promoted student has no schedule conflict at that slot
-      - Commits only after all DB objects are ready; email sent after commit
-    """
     now = datetime.now(timezone.utc)
 
-    # Skip if the slot is too soon to be useful
     try:
         slot_dt = datetime.combine(
             slot_date,
@@ -533,7 +626,7 @@ def _promote_waitlist(officer_id, slot_date, slot_time):
         if (slot_dt - now).total_seconds() < WAITLIST_CUTOFF_MINUTES * 60:
             return
     except ValueError:
-        pass  # Can't parse time — proceed anyway
+        pass
 
     officer = db.session.get(Officer, officer_id)
     if not officer:
@@ -552,14 +645,12 @@ def _promote_waitlist(officer_id, slot_date, slot_time):
             db.session.delete(first)
             continue
 
-        # Check promoted student has no conflict at this slot
         conflict = Appointment.query.filter_by(
             user_id=first.user_id,
             date=slot_date,
             time=slot_time,
         ).filter(Appointment.status.in_(['Pending', 'Approved'])).first()
         if conflict:
-            # Skip this person — they already have something at this time
             db.session.delete(first)
             continue
 
@@ -578,22 +669,19 @@ def _promote_waitlist(officer_id, slot_date, slot_time):
         )
         db.session.add(new_apt)
         db.session.delete(first)
-        db.session.flush()          # get new_apt.id
+        db.session.flush()
 
         new_apt.qr_code_data = build_qr_data(new_apt)
 
-        notif = Notification(
+        db.session.add(Notification(
             user_id=first.user_id,
             message=(
                 f"Great news! A slot opened up with {officer.name} "
                 f"on {slot_date.strftime('%d %b %Y')} at {slot_time}. "
                 f"You have been automatically booked!"
             )
-        )
-        db.session.add(notif)
+        ))
 
-        # Commit everything BEFORE sending email so a mail failure
-        # doesn't roll back the appointment.
         db.session.commit()
 
         try:
@@ -604,10 +692,9 @@ def _promote_waitlist(officer_id, slot_date, slot_time):
                 waitlist_promoted_email(new_apt, user)
             )
         except Exception as mail_err:
-            # Log but don't crash — appointment is already saved
             print(f'[IUT] Waitlist promotion email failed for user {user.id}: {mail_err}')
 
-        return  # Only promote one person per slot opening
+        return
 
 
 # ── Slots API ─────────────────────────────────────────────────────────────────
@@ -683,7 +770,6 @@ def get_slots():
 @student_bp.route('/api/calendar')
 @login_required
 def calendar_data():
-    """Return availability status for each day in a month for an officer."""
     officer_id = request.args.get('officer')
     year       = int(request.args.get('year',  datetime.now(timezone.utc).year))
     month      = int(request.args.get('month', datetime.now(timezone.utc).month))
