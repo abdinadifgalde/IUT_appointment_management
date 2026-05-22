@@ -1,6 +1,3 @@
-# Rewritten models.py (Cal.com MVP Upgrade)
-
-```python
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
 from datetime import datetime, timezone, timedelta
@@ -16,7 +13,12 @@ db = SQLAlchemy()
 # Roles
 # ═════════════════════════════════════════════════════════════════════════════
 
-VALID_ROLES = ('student', 'officer', 'admin', 'super_admin')
+VALID_ROLES = (
+    'student',
+    'officer',
+    'admin',
+    'super_admin'
+)
 
 PRIVILEGED_ROLES = (
     'officer',
@@ -43,9 +45,13 @@ APPOINTMENT_STATUSES = (
 # ═════════════════════════════════════════════════════════════════════════════
 
 class User(db.Model, UserMixin):
+
     id = db.Column(db.Integer, primary_key=True)
 
-    name = db.Column(db.String(100), nullable=False)
+    name = db.Column(
+        db.String(100),
+        nullable=False
+    )
 
     email = db.Column(
         db.String(120),
@@ -131,16 +137,22 @@ class User(db.Model, UserMixin):
         return self.email_verify_token
 
     def is_locked(self):
-        if self.locked_until and datetime.now(timezone.utc).replace(tzinfo=None) < self.locked_until:
+        if (
+            self.locked_until and
+            datetime.now(timezone.utc).replace(tzinfo=None)
+            < self.locked_until
+        ):
             return True
 
         return False
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Password Reset Token
 # ═════════════════════════════════════════════════════════════════════════════
 
 class PasswordResetToken(db.Model):
+
     id = db.Column(db.Integer, primary_key=True)
 
     user_id = db.Column(
@@ -176,37 +188,69 @@ class PasswordResetToken(db.Model):
         backref='reset_tokens'
     )
 
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Officer Model
 # ═════════════════════════════════════════════════════════════════════════════
 
 class Officer(db.Model):
+
     id = db.Column(db.Integer, primary_key=True)
 
-    name = db.Column(db.String(100), nullable=False)
+    name = db.Column(
+        db.String(100),
+        nullable=False
+    )
 
     designation = db.Column(
         db.String(100),
         nullable=False
     )
 
-    bio = db.Column(db.Text, nullable=True)
+    bio = db.Column(
+        db.Text,
+        nullable=True
+    )
 
-    handles = db.Column(db.Text, nullable=True)
+    handles = db.Column(
+        db.Text,
+        nullable=True
+    )
 
-    email = db.Column(db.String(120), nullable=True)
+    email = db.Column(
+        db.String(120),
+        nullable=True
+    )
 
-    room = db.Column(db.String(50), nullable=True)
+    room = db.Column(
+        db.String(50),
+        nullable=True
+    )
 
-    photo_url = db.Column(db.String(255), nullable=True)
+    photo_url = db.Column(
+        db.String(255),
+        nullable=True
+    )
 
-    is_active = db.Column(db.Boolean, default=True)
+    is_active = db.Column(
+        db.Boolean,
+        default=True
+    )
 
-    work_start = db.Column(db.String(5), default='08:00')
+    work_start = db.Column(
+        db.String(5),
+        default='08:00'
+    )
 
-    work_end = db.Column(db.String(5), default='17:00')
+    work_end = db.Column(
+        db.String(5),
+        default='17:00'
+    )
 
-    daily_limit = db.Column(db.Integer, default=0)
+    daily_limit = db.Column(
+        db.Integer,
+        default=0
+    )
 
     recurring_off_days = db.Column(
         db.String(20),
@@ -233,6 +277,7 @@ class Officer(db.Model):
     )
 
     def get_off_days(self):
+
         if not self.recurring_off_days:
             return []
 
@@ -243,6 +288,7 @@ class Officer(db.Model):
         ]
 
     def get_handles(self):
+
         if not self.handles:
             return []
 
@@ -252,11 +298,13 @@ class Officer(db.Model):
             if handle.strip()
         ]
 
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Officer Working Hours
 # ═════════════════════════════════════════════════════════════════════════════
 
 class OfficerWorkingHours(db.Model):
+
     id = db.Column(db.Integer, primary_key=True)
 
     officer_id = db.Column(
@@ -280,11 +328,13 @@ class OfficerWorkingHours(db.Model):
         nullable=False
     )
 
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Officer Unavailability
 # ═════════════════════════════════════════════════════════════════════════════
 
 class OfficerUnavailability(db.Model):
+
     id = db.Column(db.Integer, primary_key=True)
 
     officer_id = db.Column(
@@ -316,11 +366,13 @@ class OfficerUnavailability(db.Model):
     def is_active_on(self, date):
         return self.start_date <= date <= self.end_date
 
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Appointment Model
 # ═════════════════════════════════════════════════════════════════════════════
 
 class Appointment(db.Model):
+
     id = db.Column(db.Integer, primary_key=True)
 
     user_id = db.Column(
@@ -497,41 +549,58 @@ class Appointment(db.Model):
         onupdate=lambda: datetime.now(timezone.utc)
     )
 
-    # ── Helper Methods ─────────────────────────────
-
     def get_start_datetime(self):
+
         return datetime.strptime(
             f'{self.date} {self.time}',
             '%Y-%m-%d %H:%M'
         )
 
     def get_end_datetime(self):
+
         start = self.get_start_datetime()
 
-        return start + timedelta(minutes=self.duration or 15)
+        return start + timedelta(
+            minutes=self.duration or 15
+        )
 
     def is_upcoming(self):
-        return self.get_start_datetime() > datetime.now()
+
+        return (
+            self.get_start_datetime()
+            > datetime.now()
+        )
 
     def is_completed(self):
+
         return self.status.lower() == 'completed'
 
     def mark_completed(self):
+
         self.status = 'Completed'
-        self.completed_at = datetime.now(timezone.utc)
+
+        self.completed_at = datetime.now(
+            timezone.utc
+        )
 
     def mark_no_show(self):
+
         self.no_show = True
         self.status = 'No Show'
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Waitlist Entry
 # ═════════════════════════════════════════════════════════════════════════════
 
 class WaitlistEntry(db.Model):
+
     __tablename__ = 'waitlist_entry'
 
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
 
     officer_id = db.Column(
         db.Integer,
@@ -603,12 +672,17 @@ class WaitlistEntry(db.Model):
         ),
     )
 
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Notification
 # ═════════════════════════════════════════════════════════════════════════════
 
 class Notification(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
+
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
 
     user_id = db.Column(
         db.Integer,
@@ -631,14 +705,19 @@ class Notification(db.Model):
         default=lambda: datetime.now(timezone.utc)
     )
 
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Appointment History
 # ═════════════════════════════════════════════════════════════════════════════
 
 class AppointmentHistory(db.Model):
+
     __tablename__ = 'appointment_history'
 
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
 
     appointment_id = db.Column(
         db.Integer,
@@ -693,14 +772,19 @@ class AppointmentHistory(db.Model):
         backref='history_actions'
     )
 
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Appointment Guests
 # ═════════════════════════════════════════════════════════════════════════════
 
 class AppointmentGuest(db.Model):
+
     __tablename__ = 'appointment_guest'
 
-    id = db.Column(db.Integer, primary_key=True)
+    id = db.Column(
+        db.Integer,
+        primary_key=True
+    )
 
     appointment_id = db.Column(
         db.Integer,
@@ -723,5 +807,3 @@ class AppointmentGuest(db.Model):
         'Appointment',
         backref='guests'
     )
-
-```
