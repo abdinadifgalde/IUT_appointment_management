@@ -401,3 +401,178 @@ class CalendarOverlay(db.Model):
         db.DateTime,
         default=datetime.utcnow
     )
+# ─────────────────────────────────────────────────────────────
+# OFFICER MODEL
+# ─────────────────────────────────────────────────────────────
+
+class Officer(db.Model):
+
+    __tablename__ = 'officer'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    name = db.Column(db.String(100), nullable=False)
+
+    email = db.Column(db.String(120), unique=True, nullable=False)
+
+    designation = db.Column(db.String(100), default='Officer')
+
+    department = db.Column(db.String(100))
+
+    room = db.Column(db.String(100))
+
+    photo_url = db.Column(db.String(255))
+
+    bio = db.Column(db.Text)
+
+    handles = db.Column(db.Text)  # comma-separated tags
+
+    work_start = db.Column(db.String(10), default='08:00')
+
+    work_end = db.Column(db.String(10), default='17:00')
+
+    daily_limit = db.Column(db.Integer, default=0)  # 0 = unlimited
+
+    recurring_off_days = db.Column(db.String(50), default='')  # e.g. "5,6" for Sat,Sun
+
+    avg_appointment_duration = db.Column(db.Integer, default=15)
+
+    is_active = db.Column(db.Boolean, default=True)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Relationships
+    unavailabilities = db.relationship(
+        'OfficerUnavailability',
+        backref='officer',
+        lazy=True,
+        cascade='all, delete-orphan'
+    )
+
+    working_hours = db.relationship(
+        'OfficerWorkingHours',
+        backref='officer',
+        lazy=True,
+        cascade='all, delete-orphan'
+    )
+
+    def get_off_days(self):
+        """Return set of weekday integers (0=Mon … 6=Sun) that are off."""
+        if not self.recurring_off_days:
+            return set()
+        try:
+            return {int(d) for d in self.recurring_off_days.split(',') if d.strip()}
+        except ValueError:
+            return set()
+
+    def get_handles(self):
+        if not self.handles:
+            return []
+        return [h.strip() for h in self.handles.split(',') if h.strip()]
+
+    def __repr__(self):
+        return f'<Officer {self.name}>'
+
+
+# ─────────────────────────────────────────────────────────────
+# OFFICER UNAVAILABILITY
+# ─────────────────────────────────────────────────────────────
+
+class OfficerUnavailability(db.Model):
+
+    __tablename__ = 'officer_unavailability'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    officer_id = db.Column(
+        db.Integer,
+        db.ForeignKey('officer.id'),
+        nullable=False
+    )
+
+    start_date = db.Column(db.Date, nullable=False)
+
+    end_date = db.Column(db.Date, nullable=False)
+
+    reason = db.Column(db.String(255))
+
+    def __repr__(self):
+        return f'<OfficerUnavailability officer={self.officer_id}>'
+
+
+# ─────────────────────────────────────────────────────────────
+# OFFICER WORKING HOURS (per-weekday overrides)
+# ─────────────────────────────────────────────────────────────
+
+class OfficerWorkingHours(db.Model):
+
+    __tablename__ = 'officer_working_hours'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    officer_id = db.Column(
+        db.Integer,
+        db.ForeignKey('officer.id'),
+        nullable=False
+    )
+
+    weekday = db.Column(db.Integer, nullable=False)  # 0=Mon … 6=Sun
+
+    start_time = db.Column(db.String(10), nullable=False)
+
+    end_time = db.Column(db.String(10), nullable=False)
+
+    def __repr__(self):
+        return f'<OfficerWorkingHours officer={self.officer_id} weekday={self.weekday}>'
+
+
+# ─────────────────────────────────────────────────────────────
+# AUDIT LOG
+# ─────────────────────────────────────────────────────────────
+
+class AuditLog(db.Model):
+
+    __tablename__ = 'audit_log'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    admin_id = db.Column(
+        db.Integer,
+        db.ForeignKey('user.id'),
+        nullable=False
+    )
+
+    action = db.Column(db.String(100), nullable=False)
+
+    detail = db.Column(db.Text)
+
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f'<AuditLog {self.action}>'
+
+
+# ─────────────────────────────────────────────────────────────
+# APPOINTMENT TIMELINE
+# ─────────────────────────────────────────────────────────────
+
+class AppointmentTimeline(db.Model):
+
+    __tablename__ = 'appointment_timeline'
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    appointment_id = db.Column(
+        db.Integer,
+        db.ForeignKey('appointment.id'),
+        nullable=False
+    )
+
+    status = db.Column(db.String(50), nullable=False)
+
+    note = db.Column(db.Text)
+
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f'<AppointmentTimeline apt={self.appointment_id} status={self.status}>'
